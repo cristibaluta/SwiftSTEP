@@ -418,7 +418,9 @@ final class STEPTessellator {
             throw STEP.ParseError("Face loop is not closed")
         }
         points.removeLast()
-        guard points.count >= 3 else { throw STEP.ParseError("Face loop is degenerate") }
+        guard points.count >= 3 else {
+            throw STEP.ParseError("Face loop is degenerate: only \(points.count) distinct sample points (every edge in the loop was sampled as a single chord)")
+        }
         // A bound with orientation .F runs against its loop.
         return boundOrientation == "T" ? points : points.reversed()
     }

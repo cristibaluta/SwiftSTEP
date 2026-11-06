@@ -48,9 +48,12 @@ enum STEPAngle {
 
 enum STEPArcSampler {
     /// Also the minimum resolution: a full circle never has fewer than 8 segments,
-    /// so tiny circles stay round instead of collapsing to a chord.
+    /// so tiny circles stay round instead of collapsing to a chord. Any arc has at least
+    /// `minimumSegments` so a face bounded only by short arcs (a lens of two arcs, or an arc
+    /// closed by a line) still yields a loop of 3+ distinct points.
     static let maximumAngularStep = Double.pi / 4
     static let maximumSegments = 4096
+    static let minimumSegments = 2
 
     struct Plan {
         let segments: Int
@@ -67,7 +70,7 @@ enum STEPArcSampler {
         let step = min(toleranceStep, maximumAngularStep)
         // The epsilon keeps float noise (e.g. 2.0000000000000004) from adding a segment.
         let wanted = step > 0 ? (magnitude / step - 1e-9).rounded(.up) : Double.infinity
-        let segments = Int(min(max(wanted, 1), Double(maximumSegments)))
+        let segments = Int(min(max(wanted, Double(minimumSegments)), Double(maximumSegments)))
         let actualStep = magnitude / Double(segments)
         let sine = sin(actualStep / 4)
         return Plan(segments: segments, chordError: 2 * radius * sine * sine)
