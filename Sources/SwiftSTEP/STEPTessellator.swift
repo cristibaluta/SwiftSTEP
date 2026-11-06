@@ -8,9 +8,12 @@ import simd
 ///
 /// Supported: planes (outer loop with holes) and cylinders, cones, spheres and tori trimmed
 /// by their loops, including faces that wrap the whole axis (a cylinder between two
-/// circles) and the seam-edge form of the same. Not yet: B-spline and swept surfaces, faces
-/// that reach a sphere's pole or a cone's apex, vertex or polyline loops, oriented faces.
-/// Any such face drops the whole body's surface, with a diagnostic.
+/// circles) and the seam-edge form of the same, and freeform faces on a
+/// B_SPLINE_SURFACE_WITH_KNOTS (rational or not, simple or complex record). Not yet: swept
+/// surfaces (revolution, linear extrusion), B-splines without explicit knots or that close on
+/// themselves or have a collapsed side, faces that reach a sphere's pole or a cone's apex,
+/// vertex or polyline loops, oriented faces. Any such face drops the whole body's surface,
+/// with a diagnostic.
 ///
 /// Task-confined like `STEPFile`; use through `STEPEdgeImporter.parseGeometry`.
 final class STEPTessellator {
@@ -172,10 +175,20 @@ final class STEPTessellator {
         return ParsedFace(boundIDs: try p.references(at: 1), surfaceID: try p.reference(at: 2), sameSense: sense == "T")
     }
 
+    /// Mixin types of a complex record that say nothing about which surface it is.
+    private static let surfaceMixins: Set<String> = ["BOUNDED_SURFACE", "SURFACE", "GEOMETRIC_REPRESENTATION_ITEM",
+                                                     "REPRESENTATION_ITEM"]
+
     private func parseSurface(_ id: Int, scale: Double, contextID: Int) throws -> STEP.Surface {
         let components = try file.components(id)
+        if components.contains(where: { $0.type == "B_SPLINE_SURFACE_WITH_KNOTS" }) {
+            return try parseBSplineSurface(id, components: components, scale: scale)
+        }
         guard let part = components.first(where: { Self.surfaceTypes.contains($0.type) }) else {
-            throw STEP.ParseError("Unsupported surface type \(components.first?.type ?? "unknown") at #\(id)")
+            // A complex record starts with mixins such as BOUNDED_SURFACE; name the real kind.
+            let kind = components.map { $0.type }.first(where: { !Self.surfaceMixins.contains($0) })
+                ?? components.first?.type ?? "unknown"
+            throw STEP.ParseError("Unsupported surface type \(kind) at #\(id)")
         }
         let p = part.parameters
         // Only the frame helper is used: the resolver scales the placement's origin.
@@ -214,6 +227,107 @@ final class STEPTessellator {
                 let minor = try length(3)
                 guard major > minor else { throw STEP.ParseError("Self-intersecting torus at #\(id) is not supported") }
                 return .torus(frame, major: major, minor: minor)
+        }
+    }
+
+    // MARK: B-spline surfaces
+
+    /// Both file layouts: the simple 13-parameter B_SPLINE_SURFACE_WITH_KNOTS record, and the
+    /// complex record of B_SPLINE_SURFACE + B_SPLINE_SURFACE_WITH_KNOTS (+ RATIONAL_B_SPLINE_SURFACE
+    /// for weights) that CAD systems write for NURBS patches.
+    private func parseBSplineSurface(_ id: Int, components: [STEPComponent], scale: Double) throws -> STEP.Surface {
+        let uDegree: Int
+        let vDegree: Int
+        let netIDs: [[STEPValue]]
+        let uMultiplicities: [Int]
+        let vMultiplicities: [Int]
+        let uKnots: [Double]
+        let vKnots: [Double]
+        var weights: [[Double]]?
+        if let base = components.first(where: { $0.type == "B_SPLINE_SURFACE" }),
+           let withKnots = components.first(where: { $0.type == "B_SPLINE_SURFACE_WITH_KNOTS" }) {
+            uDegree = try Self.integer(base.parameters.argument(0))
+            vDegree = try Self.integer(base.parameters.argument(1))
+            netIDs = try Self.grid(base.parameters.argument(2))
+            uMultiplicities = try Self.integers(withKnots.parameters.argument(0))
+            vMultiplicities = try Self.integers(withKnots.parameters.argument(1))
+            uKnots = try Self.numbers(withKnots.parameters.argument(2))
+            vKnots = try Self.numbers(withKnots.parameters.argument(3))
+            if let rational = components.first(where: { $0.type == "RATIONAL_B_SPLINE_SURFACE" }) {
+                weights = try Self.grid(rational.parameters.argument(0)).map { try Self.numbers(.list($0)) }
+            }
+        } else if let simple = components.first(where: { $0.type == "B_SPLINE_SURFACE_WITH_KNOTS" }),
+                  simple.parameters.count == 13 {
+            uDegree = try Self.integer(simple.parameters.argument(1))
+            vDegree = try Self.integer(simple.parameters.argument(2))
+            netIDs = try Self.grid(simple.parameters.argument(3))
+            uMultiplicities = try Self.integers(simple.parameters.argument(8))
+            vMultiplicities = try Self.integers(simple.parameters.argument(9))
+            uKnots = try Self.numbers(simple.parameters.argument(10))
+            vKnots = try Self.numbers(simple.parameters.argument(11))
+        } else {
+            throw STEP.ParseError("Unsupported B-spline surface layout at #\(id)")
+        }
+        // Bound the work before resolving every control point.
+        let pointCount = netIDs.reduce(0) { $0 + $1.count }
+        guard pointCount <= STEP.BSplineSurface.maximumControlPoints else {
+            throw STEP.ParseError("B-spline surface #\(id) has too many control points")
+        }
+        let controlPoints: [[SIMD3<Double>]] = try netIDs.map { row in
+            try row.map { value in
+                guard let pointID = value.reference else { throw STEP.ParseError("Expected a control point reference in B-spline surface #\(id)") }
+                return try cartesianPoint(pointID, scale: scale)
+            }
+        }
+        let spline = try STEP.BSplineSurface(uDegree: uDegree, vDegree: vDegree, controlPoints: controlPoints,
+                                            weights: weights, uMultiplicities: uMultiplicities, uKnotValues: uKnots,
+                                            vMultiplicities: vMultiplicities, vKnotValues: vKnots)
+        if let limitation = spline.limitation {
+            throw STEP.ParseError("B-spline surface #\(id) \(limitation); not supported yet")
+        }
+        return .bspline(spline)
+    }
+
+    /// Scaled to millimetres, like every other point.
+    private func cartesianPoint(_ id: Int, scale: Double) throws -> SIMD3<Double> {
+        let point = try file.parameters(id, type: "CARTESIAN_POINT")
+        guard let coordinates = try point.argument(1).list, coordinates.count == 3 else {
+            throw STEP.ParseError("Expected 3D coordinates at #\(id)")
+        }
+        var result = SIMD3<Double>.zero
+        for axis in 0..<3 {
+            guard let value = coordinates[axis].number, value.isFinite, (value * scale).isFinite else {
+                throw STEP.ParseError("Nonfinite/invalid point #\(id)")
+            }
+            result[axis] = value * scale
+        }
+        return result
+    }
+
+    private static func integer(_ value: STEPValue) throws -> Int {
+        guard case .integer(let result) = value else { throw STEP.ParseError("Expected an integer in B-spline surface data") }
+        return result
+    }
+
+    private static func integers(_ value: STEPValue) throws -> [Int] {
+        guard let items = value.list else { throw STEP.ParseError("Expected a list of integers in B-spline surface data") }
+        return try items.map { try integer($0) }
+    }
+
+    private static func numbers(_ value: STEPValue) throws -> [Double] {
+        guard let items = value.list else { throw STEP.ParseError("Expected a list of numbers in B-spline surface data") }
+        return try items.map { item in
+            guard let number = item.number, number.isFinite else { throw STEP.ParseError("Nonfinite B-spline surface number") }
+            return number
+        }
+    }
+
+    /// A list of lists, as the control point net and the weights are written.
+    private static func grid(_ value: STEPValue) throws -> [[STEPValue]] {
+        guard let rows = value.list else { throw STEP.ParseError("Expected a grid in B-spline surface data") }
+        return try rows.map { row in
+            guard let items = row.list else { throw STEP.ParseError("Expected a grid in B-spline surface data") }
+            return items
         }
     }
 
@@ -317,6 +431,12 @@ final class STEPTessellator {
     /// many turns it makes.
     private func parametrize(_ points: [SIMD3<Double>], on surface: STEP.Surface) throws -> ParamLoop {
         let raw = points.map { surface.parameters(of: $0) }
+        // Analytic surfaces project exactly. A B-spline's inverse is searched for, and a boundary
+        // that does not lie on it (a damaged file, or a search that missed) would be meshed
+        // somewhere else, so it fails with the distance instead.
+        if let worst = raw.map({ $0.distance }).max(), worst > tolerance {
+            throw STEP.ParseError("Face boundary lies \((worst * 1000).rounded() / 1000) mm off its \(surface.kindName)")
+        }
         if raw.contains(where: { $0.isPole }) {
             throw STEP.ParseError("Face reaches a pole or apex of its \(surface.kindName); not supported yet")
         }
@@ -512,6 +632,22 @@ final class STEPTessellator {
     }
 
     private func sampling(for surface: STEP.Surface, vRange: ClosedRange<Double>) -> STEPSlabTriangulator.Sampling {
+        if case .bspline(let spline) = surface {
+            // Freeform: curved along both u and v, so subdivide both from the chord tolerance.
+            // The lattice and the rows are uniform in parameter space, which is what the
+            // spline's own knots make roughly uniform in space; the counts come from probing it.
+            let divisions = spline.divisions(tolerance: tolerance)
+            let uLength = spline.uDomain.upperBound - spline.uDomain.lowerBound
+            let vLength = spline.vDomain.upperBound - spline.vDomain.lowerBound
+            var rows: ((Double, Double, Double) -> Int)?
+            if divisions.v > 1 {
+                let perDomain = Double(divisions.v)
+                rows = { _, low, high in Int((abs(high - low) / vLength * perDomain).rounded(.up)) }
+            }
+            return STEPSlabTriangulator.Sampling(evaluate: { u, v in spline.point(u: u, v: v) },
+                                                 rows: rows,
+                                                 latticeStep: divisions.u > 1 ? uLength / Double(divisions.u) : nil)
+        }
         var lattice: Double?
         if let radius = surface.widestRadius(vRange: vRange), radius > 0 {
             lattice = Self.angularStep(radius: radius, tolerance: tolerance)

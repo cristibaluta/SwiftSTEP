@@ -43,7 +43,8 @@ Call the synchronous forms from a background task, never the main actor.
 | `STEP.SurfaceModel` | `origin: SIMD3<Double>` and per fully tessellated body a `STEP.BodyMesh` |
 | `STEP.BodyMesh` | `positions`/`normals: [SIMD3<Float>]` (mm, relative to `SurfaceModel.origin`), `indices: [UInt32]`, `faces: [STEP.FaceMesh]`, `face(ofTriangle:)`, `occluderTriangles(offset:)` |
 | `STEP.FaceMesh` | `faceID`, `surface: STEP.Surface`, `sameSense`, `triangles` |
-| `STEP.Surface` | `.plane`, `.cylinder`, `.cone`, `.sphere`, `.torus`, each with a `STEP.Frame` (`origin`, `x`, `y`, `z`) |
+| `STEP.Surface` | `.plane`, `.cylinder`, `.cone`, `.sphere`, `.torus`, each with a `STEP.Frame` (`origin`, `x`, `y`, `z`), and `.bspline(STEP.BSplineSurface)`. `frame` is `nil` for a B-spline surface |
+| `STEP.BSplineSurface` | `uDegree`, `vDegree`, `uDomain`, `vDomain`, `point(u:v:)`, `normal(u:v:)` (`∂P/∂u × ∂P/∂v`); u, v are the file's knot parameters |
 
 Edges are unique per body, in deterministic order (body, then `EDGE_CURVE` entity ID). Every edge has at
 least two points; the first and last are exactly the scaled vertex coordinates.
@@ -65,7 +66,10 @@ Not supported (the edge is skipped with a diagnostic, never drawn as a guessed c
 parabolas, hyperbolas, `COMPOSITE_CURVE`, B-splines without explicit knots, nested trimmed curves.
 
 Surfaces (`readGeometry`): `PLANE` (holes included), `CYLINDRICAL_SURFACE`, `CONICAL_SURFACE`,
-`SPHERICAL_SURFACE`, `TOROIDAL_SURFACE`, trimmed by their loops. B-spline and swept surfaces, faces
+`SPHERICAL_SURFACE`, `TOROIDAL_SURFACE` and `B_SPLINE_SURFACE_WITH_KNOTS` (rational or not, simple or
+complex record), trimmed by their loops. A face whose boundary lies more than the chord tolerance off its
+B-spline surface fails with the distance. Swept surfaces (revolution, linear extrusion), B-spline surfaces
+without explicit knots, closed or collapsed-side B-spline surfaces, faces
 reaching a sphere pole or cone apex, faces wrapping a torus tube, vertex/poly loops and `ORIENTED_FACE` are
 not supported: such a face, or a skipped boundary edge, drops that body's whole mesh (a partial occluder
 would hide visible edges) and the body is listed in `unsurfacedBodies`. Cap: 1,000,000 triangles per import.
@@ -97,7 +101,7 @@ result with `bounds == nil`.
 | File | Role |
 | --- | --- |
 | `STEP.swift` | Namespace and public entry points |
-| `Model.swift`, `Mesh.swift`, `Surface.swift` | Public output types |
+| `Model.swift`, `Mesh.swift`, `Surface.swift`, `BSplineSurface.swift` | Public output types |
 | `STEPEdgeImporter.swift` | Internal drivers (parse, surfaces, detached worker) |
 | `STEPTokenizer.swift`, `STEPFile.swift`, `STEPValue.swift` | Part 21 lexer, lazy entity index and cache |
 | `STEPUnits.swift` | Length and plane-angle units per representation context |
