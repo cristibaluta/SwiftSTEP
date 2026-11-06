@@ -1,0 +1,114 @@
+# SwiftSTEP
+
+Reads STEP (ISO 10303-21) B-rep solids and shells and returns plain `simd` data, under the `STEP`
+namespace. Foundation and `simd` only: no UI, renderer or CAM types. Apple platforms (macOS, iOS).
+
+```swift
+import SwiftSTEP
+
+let model = try STEP.read(contentsOf: url)           // STEP.EdgeModel
+for edge in model.edges {
+    print(edge.id.entityID, edge.kind, edge.points)   // [SIMD3<Double>], millimetres
+}
+for note in model.diagnostics { print(note.entityID ?? 0, note.message) }
+```
+
+The result is display geometry: edges as polylines sampled to a chord tolerance. It does not heal
+geometry, read assemblies or produce machining contours.
+
+## API
+
+| Call | Returns |
+| --- | --- |
+| `STEP.read(data:importID:options:)` / `read(contentsOf:…)` | `STEP.EdgeModel` (synchronous) |
+| `STEP.readGeometry(data:…)` / `readGeometry(contentsOf:…)` | `STEP.Geometry`: `edges` plus `surfaces` (synchronous) |
+| `STEP.load(contentsOf:…)` / `loadGeometry(contentsOf:…)` | Same, `async`: detached worker, memory-mapped, cancellable |
+
+Call the synchronous forms from a background task, never the main actor.
+
+- `importID: UUID` is stamped into every `STEP.EdgeID`. Pass the same ID when re-parsing an unchanged
+  source so stored selections stay valid.
+- `STEP.Options`: `assumedUnitScaleToMM: Double?` (default `nil`: an unresolvable length unit fails the
+  import) and `chordToleranceMM: Double` (default `0.01`).
+
+### Output types
+
+| Type | Contents |
+| --- | --- |
+| `STEP.EdgeModel` | `importID`, `edges`, `bodies`, `bounds`, `diagnostics`, `indexedEntityCount`, `reachableEdgeCount`, `skippedEdgeCount` |
+| `STEP.Edge` | `id`, `kind`, `points: [SIMD3<Double>]` (mm, source coordinates), `startVertexID`, `endVertexID`, `adjacentFaceIDs`, `chordError` |
+| `STEP.EdgeID` / `STEP.BodyID` | Stable identity for one import: `importID` + body (representation and body entity IDs) + `EDGE_CURVE` entity ID |
+| `STEP.Bounds` | `min`, `max`, `size`, `workpieceOrigin` (min X, min Y, max Z) as `SIMD3<Double>` |
+| `STEP.Geometry` | `edges: EdgeModel`, `surfaces: SurfaceModel` |
+| `STEP.SurfaceModel` | `origin: SIMD3<Double>` and per fully tessellated body a `STEP.BodyMesh` |
+| `STEP.BodyMesh` | `positions`/`normals: [SIMD3<Float>]` (mm, relative to `SurfaceModel.origin`), `indices: [UInt32]`, `faces: [STEP.FaceMesh]`, `face(ofTriangle:)`, `occluderTriangles(offset:)` |
+| `STEP.FaceMesh` | `faceID`, `surface: STEP.Surface`, `sameSense`, `triangles` |
+| `STEP.Surface` | `.plane`, `.cylinder`, `.cone`, `.sphere`, `.torus`, each with a `STEP.Frame` (`origin`, `x`, `y`, `z`) |
+
+Edges are unique per body, in deterministic order (body, then `EDGE_CURVE` entity ID). Every edge has at
+least two points; the first and last are exactly the scaled vertex coordinates.
+
+## Supported
+
+| Geometry | Handled as |
+| --- | --- |
+| `LINE` | Two vertices |
+| `CIRCLE`, `ELLIPSE` | Arc or full curve from the vertices, `same_sense`, trims; sampled to the chord tolerance |
+| `POLYLINE` | Cut to the edge between its vertices; closed polylines can wrap past their seam |
+| `B_SPLINE_CURVE_WITH_KNOTS` | Simple and complex rational records; de Boor evaluation, vertex projection, adaptive sampling |
+| `TRIMMED_CURVE` | Point or parameter trims, `sense_agreement`, context angle units (circles and ellipses) |
+| `SURFACE_CURVE`, `SEAM_CURVE`, `INTERSECTION_CURVE` | Unwrapped to `curve_3d`, also around a trimmed curve |
+| Bodies | `MANIFOLD_SOLID_BREP`, `BREP_WITH_VOIDS`, `SHELL_BASED_SURFACE_MODEL`, several per file, each with its own units |
+| Units | SI with prefixes, `CONVERSION_BASED_UNIT` chains (inch, foot, degree) |
+
+Not supported (the edge is skipped with a diagnostic, never drawn as a guessed chord): offset curves,
+parabolas, hyperbolas, `COMPOSITE_CURVE`, B-splines without explicit knots, nested trimmed curves.
+
+Surfaces (`readGeometry`): `PLANE` (holes included), `CYLINDRICAL_SURFACE`, `CONICAL_SURFACE`,
+`SPHERICAL_SURFACE`, `TOROIDAL_SURFACE`, trimmed by their loops. B-spline and swept surfaces, faces
+reaching a sphere pole or cone apex, faces wrapping a torus tube, vertex/poly loops and `ORIENTED_FACE` are
+not supported: such a face, or a skipped boundary edge, drops that body's whole mesh (a partial occluder
+would hide visible edges) and the body is listed in `unsurfacedBodies`. Cap: 1,000,000 triangles per import.
+
+## Errors versus diagnostics
+
+**Throws** `STEP.ParseError` (its `description` is the message) or `CancellationError` for problems with the
+file as a whole: malformed or truncated Part 21, duplicate entity IDs, excessive nesting, non-finite
+numbers, assemblies (`MAPPED_ITEM`, `NEXT_ASSEMBLY_USAGE_OCCURRENCE`,
+`REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION`), an unresolvable length unit without
+`assumedUnitScaleToMM`, invalid options.
+
+**Succeeds with a diagnostic** for problems with one edge or face. Always check `diagnostics` (and
+`surfaces.diagnostics`): an empty `edges` array comes with one explaining why. An empty file is a successful
+result with `bounds == nil`.
+
+## Sampling and tolerances
+
+- Curves are sampled to `chordToleranceMM`. A full circle never has fewer than 8 segments.
+- Caps: 4096 segments per circle or ellipse, 20,000 points per B-spline edge; a diagnostic reports the actual
+  error when a cap is hit.
+- Vertices are checked against their curve with a tolerance relative to the curve size (1e-4 of the largest
+  axis or bounding diagonal); edges whose vertices are farther off are skipped.
+- Double precision throughout; only `BodyMesh` is Float, recentred on `SurfaceModel.origin`.
+- Deterministic: the same bytes and `importID` give the same edges, IDs and order.
+
+## Layout
+
+| File | Role |
+| --- | --- |
+| `STEP.swift` | Namespace and public entry points |
+| `Model.swift`, `Mesh.swift`, `Surface.swift` | Public output types |
+| `STEPEdgeImporter.swift` | Internal drivers (parse, surfaces, detached worker) |
+| `STEPTokenizer.swift`, `STEPFile.swift`, `STEPValue.swift` | Part 21 lexer, lazy entity index and cache |
+| `STEPUnits.swift` | Length and plane-angle units per representation context |
+| `STEPEdgeExtractor.swift` | Body → shell → face → loop → edge traversal |
+| `STEPCurves.swift`, `STEPBSpline.swift` | Curve resolution, trims, sampling, B-splines |
+| `STEPTessellator.swift`, `STEPSlabTriangulator.swift` | Face triangulation |
+
+A `STEPFile` and its extractor are task-confined: never share them across tasks. Use the static entry points.
+
+## Tests
+
+`swift test`. `STEPCurveTests.swift` (Swift Testing) builds Part 21 fixtures in code: box, cylinder, arcs,
+trims, ellipses, polylines, B-splines, units and failure cases. Real CAD exports (holes, fillets, spline
+edges, multi-body parts, 50 to 100 MB files) are still to be added.
