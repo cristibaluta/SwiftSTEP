@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// The window is just the model: no overlays on the canvas. File name and counts live in the
 /// title bar, errors in an alert.
@@ -11,6 +12,10 @@ struct ContentView: View {
             .navigationSubtitle(viewer.subtitle)
             .toolbar {
                 ToolbarItem {
+                    Button { viewer.isShowingReport = true } label: { Label("Import report", systemImage: "info.circle") }
+                        .disabled(viewer.document == nil)
+                }
+                ToolbarItem {
                     Button { viewer.isImporting = true } label: { Label("Open…", systemImage: "folder") }
                 }
             }
@@ -21,6 +26,28 @@ struct ContentView: View {
                 guard let url = urls.first else { return false }
                 viewer.open(url)
                 return true
+            }
+            .sheet(isPresented: $viewer.isShowingReport) {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Import report").font(.headline)
+                    ScrollView([.vertical, .horizontal]) {
+                        Text(viewer.report)
+                            .font(.system(.caption, design: .monospaced))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    HStack {
+                        Button("Copy") {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(viewer.report, forType: .string)
+                        }
+                        Spacer()
+                        Button("Done") { viewer.isShowingReport = false }
+                            .keyboardShortcut(.defaultAction)
+                    }
+                }
+                .padding()
+                .frame(minWidth: 560, minHeight: 320)
             }
             .alert("Could not open file", isPresented: errorShown) {
                 Button("OK", role: .cancel) {}

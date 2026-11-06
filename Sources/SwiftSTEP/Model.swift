@@ -10,9 +10,11 @@ extension STEP {
     }
 
     /// A note about one entity: an unsupported curve, a skipped edge, a sampling cap.
-    public struct Diagnostic: Sendable {
+    public struct Diagnostic: Sendable, CustomStringConvertible {
         public let entityID: Int?
         public let message: String
+
+        public var description: String { entityID.map { "#\($0): \(message)" } ?? message }
     }
 
     /// No assembly instances yet: a representation/body pair identifies one occurrence.
@@ -131,5 +133,105 @@ extension STEP {
     public struct Geometry: Sendable {
         public let edges: EdgeModel
         public let surfaces: SurfaceModel
+    }
+}
+
+extension STEP.Geometry {
+
+    /// A readable account of the import: what was drawn, and for every body left without filled
+    /// faces, which faces failed, on what kind of surface and why. Print it when a model shows
+    /// only wireframe.
+    public var report: String {
+        var lines: [String] = []
+        lines.append("Edges: \(edges.edges.count) extracted, \(edges.skippedEdgeCount) skipped "
+                     + "(\(edges.reachableEdgeCount) reachable), \(edges.bodies.count) bod\(edges.bodies.count == 1 ? "y" : "ies")")
+        let faces = surfaces
+        lines.append("Faces: \(faces.tessellatedFaceCount) filled, \(faces.failedFaceCount) failed, "
+                     + "\(faces.reachableFaceCount) reachable; \(faces.triangleCount) triangles")
+
+        for note in edges.diagnostics {
+            lines.append("  edge note \(note)")
+        }
+
+        if !faces.unsurfacedBodies.isEmpty {
+            lines.append("")
+            lines.append("\(faces.unsurfacedBodies.count) bod\(faces.unsurfacedBodies.count == 1 ? "y has" : "ies have") no filled faces "
+                         + "(one failing face drops its whole body, because a partial mesh would hide the wrong edges):")
+        }
+        for body in faces.unsurfacedBodies {
+            let failures = faces.faceFailures.filter { $0.bodyID == body }
+            lines.append("  Body #\(body.entityID)")
+            // Group faces that fail for the same reason on the same kind of surface.
+            var groups: [String: [STEP.FaceFailure]] = [:]
+            var order: [String] = []
+            for failure in failures {
+                let key = "\(failure.surfaceType ?? "-")|\(Self.normalized(failure.reason))"
+                if groups[key] == nil { order.append(key) }
+                groups[key, default: []].append(failure)
+            }
+            for key in order {
+                let group = groups[key]!
+                let first = group[0]
+                let ids = group.compactMap { $0.faceID }.prefix(8).map { "#\($0)" }.joined(separator: ", ")
+                let more = group.count > 8 ? ", …" : ""
+                let kind = first.surfaceType.map { " on \($0)" } ?? ""
+                if first.faceID == nil {
+                    lines.append("    body unusable: \(first.reason)")
+                } else {
+                    lines.append("    \(group.count) face\(group.count == 1 ? "" : "s")\(kind): \(first.reason)")
+                    lines.append("      faces \(ids)\(more)")
+                }
+                if let hint = Self.hint(for: first.reason, surfaceType: first.surfaceType) {
+                    lines.append("      → \(hint)")
+                }
+            }
+        }
+
+        let other = faces.diagnostics.filter { note in
+            !faces.faceFailures.contains { $0.faceID == note.entityID && $0.faceID != nil }
+                && !faces.unsurfacedBodies.contains { $0.entityID == note.entityID }
+        }
+        for note in other { lines.append("  surface note \(note)") }
+        return lines.joined(separator: "\n")
+    }
+
+    /// Entity numbers stripped, so "at #12" and "at #40" group together.
+    private static func normalized(_ reason: String) -> String {
+        reason.replacingOccurrences(of: #"#\d+"#, with: "#_", options: .regularExpression)
+    }
+
+    private static func hint(for reason: String, surfaceType: String?) -> String? {
+        if reason.contains("Unsupported surface type") {
+            return "SwiftSTEP only meshes planes, cylinders, cones, spheres, tori and B-spline surfaces. "
+                + "Re-export the part with swept/offset/revolved surfaces converted to NURBS if your CAD can."
+        }
+        if reason.contains("has no extracted geometry") {
+            return "An edge of this face was skipped while reading the wireframe (see the edge note); fix that curve and the face follows."
+        }
+        if reason.contains("pole or apex") {
+            return "The face touches a sphere pole or cone tip, where the parameter mapping collapses. Not implemented yet."
+        }
+        if reason.contains("wraps round") {
+            return "The face goes around a torus tube or in an unusual way round an axis. Not implemented yet."
+        }
+        if reason.contains("seam") {
+            return "The face's boundary crosses the surface's periodic seam in a way the loop alignment cannot resolve."
+        }
+        if reason.contains("not connected") || reason.contains("not closed") || reason.contains("degenerate") {
+            return "The face's edges do not form a closed loop within 1e-6 mm: a gap in the file, or an edge that was resampled differently."
+        }
+        if reason.contains("off its") {
+            return "The boundary does not lie on the face's surface within the chord tolerance; the file may be damaged or use a loose tolerance."
+        }
+        if reason.contains("Triangle limit") {
+            return "The model exceeds the 1,000,000 triangle cap; raise `chordToleranceMM` to coarsen the sampling."
+        }
+        if reason.contains("B-spline") {
+            return "Only B-spline surfaces with explicit knots that do not close on themselves are supported."
+        }
+        if reason.contains("Unsupported face type") || reason.contains("Unsupported face bound") || reason.contains("Unsupported loop type") {
+            return "Only ADVANCED_FACE / FACE_SURFACE faces with EDGE_LOOP boundaries are supported (no ORIENTED_FACE, vertex or poly loops)."
+        }
+        return nil
     }
 }

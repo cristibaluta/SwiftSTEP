@@ -50,6 +50,18 @@ extension STEP {
         }
     }
 
+    /// Why one face (or, with `faceID == nil`, a whole body) could not be tessellated.
+    public struct FaceFailure: Sendable {
+        public let bodyID: BodyID
+        /// ADVANCED_FACE / FACE_SURFACE entity ID; `nil` when the body itself was unusable.
+        public let faceID: Int?
+        /// The face's underlying surface entity, when it could be read.
+        public let surfaceID: Int?
+        /// STEP type of that surface, e.g. `CYLINDRICAL_SURFACE` or `SURFACE_OF_REVOLUTION`.
+        public let surfaceType: String?
+        public let reason: String
+    }
+
     public struct SurfaceModel: Sendable {
         /// Origin the Float positions are relative to (`Bounds.workpieceOrigin`).
         public internal(set) var origin: SIMD3<Double>
@@ -59,6 +71,8 @@ extension STEP {
         /// misclassify visible edges as hidden, so such a body gets no surface at all.
         public internal(set) var unsurfacedBodies: [BodyID] = []
         public internal(set) var diagnostics: [Diagnostic] = []
+        /// One entry per face that failed, with the surface type and reason. Feeds `Geometry.report`.
+        public internal(set) var faceFailures: [FaceFailure] = []
         /// Distinct faces reachable from the supported bodies.
         public internal(set) var reachableFaceCount = 0
         /// Faces that could not be tessellated (each has a diagnostic).

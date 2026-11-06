@@ -14,6 +14,7 @@ final class Viewer: ObservableObject {
     @Published private(set) var document: Document?
     @Published var errorMessage: String?
     @Published var isImporting = false
+    @Published var isShowingReport = false
 
     private var loadTask: Task<Void, Never>?
     private var started = false
@@ -26,9 +27,14 @@ final class Viewer: ObservableObject {
         guard let geometry = document?.geometry else { return "" }
         let notes = geometry.edges.diagnostics.count + geometry.surfaces.diagnostics.count
         var text = "\(geometry.edges.edges.count) edges, \(geometry.surfaces.triangleCount) triangles"
+        let unfilled = geometry.surfaces.unsurfacedBodies.count
+        if unfilled > 0 { text += ", \(unfilled) unfilled bod\(unfilled == 1 ? "y" : "ies")" }
         if notes > 0 { text += ", \(notes) notes" }
         return text
     }
+
+    /// The library's account of the import: what was filled and why anything was not.
+    var report: String { document?.geometry.report ?? "No file loaded." }
 
     /// A path given on the command line, otherwise the bundled sample.
     func openInitialFile() {
@@ -38,6 +44,11 @@ final class Viewer: ObservableObject {
             open(URL(fileURLWithPath: path))
         } else if let sample = Bundle.module.url(forResource: "die_cube", withExtension: "step") {
             open(sample)
+        } else {
+            let message = "The bundled sample die_cube.step is missing from the resource bundle "
+                + "(\(Bundle.module.bundlePath)). Check that Package.swift lists it under `resources:`."
+            FileHandle.standardError.write(Data("SwiftSTEPDemo: \(message)\n".utf8))
+            errorMessage = message
         }
     }
 
@@ -50,9 +61,7 @@ final class Viewer: ObservableObject {
                 // The library's async entry point: parses on a detached worker, cancellable.
                 let geometry = try await STEP.loadGeometry(contentsOf: url)
                 try Task.checkCancellation()
-                for note in geometry.edges.diagnostics + geometry.surfaces.diagnostics {
-                    FileHandle.standardError.write(Data("#\(note.entityID.map(String.init) ?? "-"): \(note.message)\n".utf8))
-                }
+                FileHandle.standardError.write(Data("SwiftSTEP: \(url.lastPathComponent)\n\(geometry.report)\n".utf8))
                 document = Document(url: url, geometry: geometry)
             } catch is CancellationError {
                 // Superseded by a newer open.

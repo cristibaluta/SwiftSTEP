@@ -1,3 +1,4 @@
+import Foundation
 import MetalKit
 import simd
 import SwiftSTEP
@@ -55,7 +56,14 @@ final class Renderer: NSObject, MTKViewDelegate {
         view.enableSetNeedsDisplay = true
 
         do {
-            let library: MTLLibrary = try! device.makeDefaultLibrary(bundle: Bundle.module)
+            let library: MTLLibrary
+            do {
+                library = try device.makeDefaultLibrary(bundle: Bundle.module)
+            } catch {
+                print("SwiftSTEPDemo: could not load the shader library (default.metallib) from the resource bundle: \(error)")
+                print("SwiftSTEPDemo: check that Shaders.metal is listed under `resources:` in Package.swift.")
+                return nil
+            }
 
             let lineLayout = MTLVertexDescriptor()
             lineLayout.attributes[0].format = .float3
@@ -74,8 +82,13 @@ final class Renderer: NSObject, MTKViewDelegate {
 
             func pipeline(vertex: String, fragment: String, layout: MTLVertexDescriptor) throws -> MTLRenderPipelineState {
                 let descriptor = MTLRenderPipelineDescriptor()
-                descriptor.vertexFunction = library.makeFunction(name: vertex)
-                descriptor.fragmentFunction = library.makeFunction(name: fragment)
+                guard let vertexFunction = library.makeFunction(name: vertex),
+                      let fragmentFunction = library.makeFunction(name: fragment) else {
+                    throw NSError(domain: "SwiftSTEPDemo", code: 1,
+                                  userInfo: [NSLocalizedDescriptionKey: "shader function \(vertex)/\(fragment) not found in the library"])
+                }
+                descriptor.vertexFunction = vertexFunction
+                descriptor.fragmentFunction = fragmentFunction
                 descriptor.vertexDescriptor = layout
                 descriptor.colorAttachments[0].pixelFormat = view.colorPixelFormat
                 descriptor.depthAttachmentPixelFormat = view.depthStencilPixelFormat

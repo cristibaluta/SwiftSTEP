@@ -12,8 +12,10 @@ let package = Package(
         .target(name: "SwiftSTEP"),
         .executableTarget(name: "SwiftSTEPDemo",
                           dependencies: ["SwiftSTEP"],
+                          // Paths are relative to the target folder (Sources/SwiftSTEPDemo).
                           resources: [
-                              .process("Sources/SwiftSTEPDemo/Shaders.metal")
+                              .process("Shaders.metal"),   // compiled into the bundle's default.metallib
+                              .copy("die_cube.step")       // the sample opened at launch
                           ]),
         .testTarget(name: "SwiftSTEPTests", dependencies: ["SwiftSTEP"]),
     ]

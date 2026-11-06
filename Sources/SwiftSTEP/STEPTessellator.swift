@@ -45,6 +45,9 @@ final class STEPTessellator {
         guard tolerance.isFinite, tolerance > 0 else {
             throw STEP.ParseError("Chord tolerance must be finite and positive")
         }
+        if model.bodies.isEmpty {
+            diagnose(nil, "No bodies to tessellate: the edge pass found no supported solid or shell (see the edge notes)")
+        }
         let edgesByBody = Dictionary(grouping: model.edges, by: { $0.id.bodyID })
         for body in model.bodies {
             try Task.checkCancellation()
@@ -65,10 +68,16 @@ final class STEPTessellator {
             faces = try collectFaces(bodyID: body.id.entityID)
         } catch let error as STEP.ParseError {
             surfaces.unsurfacedBodies.append(body.id)
+            surfaces.faceFailures.append(STEP.FaceFailure(bodyID: body.id, faceID: nil, surfaceID: nil,
+                                                          surfaceType: nil, reason: error.description))
             diagnose(body.id.entityID, "No surface for body #\(body.id.entityID): \(error.description)")
             return
         }
         surfaces.reachableFaceCount += faces.count
+        if faces.isEmpty {
+            diagnose(body.id.entityID, "Body #\(body.id.entityID) has no faces, so there is nothing to fill")
+            return
+        }
         let edgeByID = Dictionary(edges.map { ($0.id.entityID, $0) }, uniquingKeysWith: { first, _ in first })
         let contextID = body.contextID
         let scale = body.unitScaleToMM
@@ -78,8 +87,10 @@ final class STEPTessellator {
 
         for face in faces {
             try Task.checkCancellation()
+            var surfaceID: Int?
             do {
                 let parsed = try parseFace(face.id)
+                surfaceID = parsed.surfaceID
                 let surface: STEP.Surface
                 if let cached = surfaceCache[parsed.surfaceID] {
                     surface = cached
@@ -87,26 +98,57 @@ final class STEPTessellator {
                     surface = try parseSurface(parsed.surfaceID, scale: scale, contextID: contextID)
                     surfaceCache[parsed.surfaceID] = surface
                 }
-                // The body is dropped once a face fails; later faces are only classified.
-                if failed > 0 { continue }
                 try tessellateFace(face.id, parsed: parsed, surface: surface, shellFlipped: face.flipped,
                                    edges: edgeByID, into: &mesh)
+                if failed > 0 {
+                    // The body is already lost. Faces are still run so that every problem is
+                    // reported, not just the first, but their triangles are thrown away at once.
+                    triangleBudget += mesh.triangleCount
+                    mesh = STEP.BodyMesh(id: body.id)
+                }
             } catch let error as STEP.ParseError {
+                if failed == 0 {
+                    // First failure: give back what this body already took from the budget.
+                    triangleBudget += mesh.triangleCount
+                    mesh = STEP.BodyMesh(id: body.id)
+                }
                 failed += 1
-                diagnose(face.id, "Face not tessellated: \(error.description)")
+                let type = surfaceID.flatMap { surfaceTypeName($0) }
+                let reason = explain(error.description, edges: edges)
+                surfaces.faceFailures.append(STEP.FaceFailure(bodyID: body.id, faceID: face.id, surfaceID: surfaceID,
+                                                              surfaceType: type, reason: reason))
+                let on = type.map { " on \($0)" + (surfaceID.map { " #\($0)" } ?? "") } ?? ""
+                diagnose(face.id, "Face #\(face.id)\(on) not tessellated: \(reason)")
             }
         }
 
         if failed > 0 {
             surfaces.failedFaceCount += failed
             surfaces.unsurfacedBodies.append(body.id)
-            triangleBudget += mesh.triangleCount
             diagnose(body.id.entityID,
-                     "No hidden-edge surface for body #\(body.id.entityID): \(failed) of \(faces.count) faces could not be tessellated")
+                     "No filled faces for body #\(body.id.entityID): \(failed) of \(faces.count) faces could not be tessellated, so the whole body is left unfilled (edges are still drawn)")
         } else if mesh.triangleCount > 0 {
             surfaces.tessellatedFaceCount += faces.count
             surfaces.bodies.append(mesh)
+        } else {
+            diagnose(body.id.entityID, "Body #\(body.id.entityID): all \(faces.count) faces tessellated to zero triangles")
         }
+    }
+
+    /// The STEP type name of a surface entity, for messages ("CYLINDRICAL_SURFACE", "SURFACE_OF_REVOLUTION").
+    private func surfaceTypeName(_ id: Int) -> String? {
+        guard let components = try? file.components(id) else { return nil }
+        return components.map { $0.type }.first(where: { !Self.surfaceMixins.contains($0) }) ?? components.first?.type
+    }
+
+    /// Adds the reason an edge was skipped when a face fails only because that edge has no geometry:
+    /// "has no extracted geometry" alone sends the reader looking in the wrong place.
+    private func explain(_ message: String, edges: [STEP.Edge]) -> String {
+        guard message.contains("has no extracted geometry"),
+              let range = message.range(of: #"#\d+"#, options: .regularExpression),
+              let edgeID = Int(message[range].dropFirst()),
+              let note = model.diagnostics.first(where: { $0.entityID == edgeID }) else { return message }
+        return "\(message) (edge note: \(note.message))"
     }
 
     /// Faces of the body's shells, each with whether its shell is reversed (the void shells of

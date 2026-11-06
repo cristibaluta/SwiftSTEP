@@ -7,7 +7,7 @@ struct SwiftSTEPDemoApp: App {
 
     init() {
         // Running from `swift run` there is no app bundle: ask for a regular, focusable app.
-        NSApplication.shared.setActivationPolicy(.regular)
+//        NSApplication.shared.setActivationPolicy(.regular)
     }
 
     var body: some Scene {
