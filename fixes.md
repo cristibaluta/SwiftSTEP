@@ -147,11 +147,12 @@ Each task is small and self-contained, so it can be done in one short session.
 
 ## Phase 3: tessellation robustness
 
-### T30. Keep partial meshes (M)
+### T30. Keep partial meshes (M) — DONE
 - Files: `STEPTessellator.swift`, `Mesh.swift`, `Model.swift`
 - Why: a missing face can only under-occlude, so dropping the whole body is more pessimistic than needed.
 - Do: when a face fails, keep the faces that worked. Mark the body `isPartial` and list failed face IDs in `SurfaceModel`. Keep the current behaviour behind an option for callers that want it.
 - Done when: a body with one bad face returns a mesh plus the failed face ID.
+- Status: done. Partial meshes are the new default: `BodyMesh.isPartial` / `failedFaceIDs`, `SurfaceModel.partialBodies`, diagnostic `body-partial`, `Geometry.report` lists them. `Options.keepPartialSurfaces = false` restores all-or-nothing. A body whose every face fails still has no mesh. Existing tests that asserted the old behaviour now pass the option; the Phase 2 unsupported-face test and `boundaryThatLeavesTheSurface...` assert the partial result. Not built or run (no Swift toolchain here): run `swift test`.
 
 ### T31. Proper triangulation for planar faces (L, split)
 - Files: new `STEPPolygonTriangulator.swift`, `STEPTessellator.swift`
@@ -166,18 +167,20 @@ Each task is small and self-contained, so it can be done in one short session.
 - Do: instead of throwing in `parametrize`, insert the pole point and add the vertical boundary run at the pole.
 - Done when: a hemisphere test tessellates.
 
-### T33. B-spline surface evaluation (M)
+### T33. B-spline surface evaluation (M) — DONE
 - Files: new `STEPBSplineSurface.swift`
 - Do:
   1. Parse `B_SPLINE_SURFACE_WITH_KNOTS`, simple and rational complex records.
   2. Evaluate with de Boor in two directions.
   3. Do not tessellate yet. Add unit tests on a bilinear and a bicubic patch.
 - Done when: point and normal evaluation match closed-form values.
+- Status: already in the package before this session (`BSplineSurface.swift`, `BSplineSurfaceTests`): simple and rational complex records, point and normal evaluation. Nothing changed.
 
-### T34. Tessellate B-spline faces (L, after T33)
+### T34. Tessellate B-spline faces (L, after T33) — DONE
 - Files: `Surface.swift`, `STEPTessellator.swift`
 - Do: add `.bspline` to `Surface`, then reuse the slab triangulator with row and lattice counts from knot spans.
 - Done when: a fillet-like patch face tessellates.
+- Status: already in the package before this session: `Surface.bspline`, slab triangulator with divisions probed from the surface, `FreeformSolidTests`. Not covered: B-splines without explicit knots, closed or collapsed-side surfaces (refused with a reason).
 
 ### T35. Extrusion and revolution surfaces (M)
 - Files: `Surface.swift`, `STEPTessellator.swift`

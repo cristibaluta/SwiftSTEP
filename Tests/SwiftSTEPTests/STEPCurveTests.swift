@@ -1368,9 +1368,15 @@ struct STEPPhase2Tests {
         let note = try #require(topology.diagnostics.first { $0.code == "unsupported-surface" })
         #expect(note.entityID == swept.first?.id && note.severity == .warning)
 
-        // The tessellator, in contrast, drops the whole body for that one face.
+        // The tessellator keeps the five planes and names the one it could not do (T30)...
         let geometry = try STEP.readGeometry(data: data)
-        #expect(geometry.surfaces.unsurfacedBodies.count == 1)
+        let mesh = try #require(geometry.surfaces.bodies.first)
+        #expect(geometry.surfaces.unsurfacedBodies.isEmpty && mesh.isPartial)
+        #expect(mesh.failedFaceIDs == swept.map(\.id))
+        #expect(mesh.faces.count == 5)
+        // ...unless the caller wants the old all-or-nothing behaviour.
+        let strict = try STEP.readGeometry(data: data, options: STEP.Options(keepPartialSurfaces: false))
+        #expect(strict.surfaces.bodies.isEmpty && strict.surfaces.unsurfacedBodies.count == 1)
     }
 
     @Test func voidShellFacesAreMarkedReversed() throws {

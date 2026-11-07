@@ -33,6 +33,12 @@ extension STEP {
         public internal(set) var indices: [UInt32] = []
         /// Sorted by triangle range, so a triangle number finds its face by binary search.
         public internal(set) var faces: [FaceMesh] = []
+        /// ADVANCED_FACE / FACE_SURFACE IDs of the faces that could not be tessellated and are
+        /// missing from `faces`. `FaceFailure` in `SurfaceModel.faceFailures` says why.
+        public internal(set) var failedFaceIDs: [Int] = []
+        /// True when some faces of the body are missing from the mesh. Such a mesh can only
+        /// under-occlude: an edge behind a missing face is not hidden.
+        public var isPartial: Bool { !failedFaceIDs.isEmpty }
 
         public var triangleCount: Int { indices.count / 3 }
 
@@ -72,11 +78,14 @@ extension STEP {
     public struct SurfaceModel: Sendable {
         /// Origin the Float positions are relative to (`Bounds.workpieceOrigin`).
         public internal(set) var origin: SIMD3<Double>
-        /// Bodies whose every face was tessellated. Only these may occlude edges.
+        /// Bodies with at least one tessellated face. A body with failed faces is here too, with
+        /// `BodyMesh.isPartial` set, unless `Options.keepPartialSurfaces` is false.
         public internal(set) var bodies: [BodyMesh] = []
-        /// Bodies that had at least one unsupported or failed face. A partial occluder would
-        /// misclassify visible edges as hidden, so such a body gets no surface at all.
+        /// Bodies without any mesh: every face failed, the body itself was unusable, or a face
+        /// failed with `Options.keepPartialSurfaces` off.
         public internal(set) var unsurfacedBodies: [BodyID] = []
+        /// Bodies in `bodies` that are missing some faces.
+        public var partialBodies: [BodyID] { bodies.filter { $0.isPartial }.map { $0.id } }
         public internal(set) var diagnostics: [Diagnostic] = []
         /// One entry per face that failed, with the surface type and reason. Feeds `Geometry.report`.
         public internal(set) var faceFailures: [FaceFailure] = []
@@ -84,7 +93,7 @@ extension STEP {
         public internal(set) var reachableFaceCount = 0
         /// Faces that could not be tessellated (each has a diagnostic).
         public internal(set) var failedFaceCount = 0
-        /// Faces inside `bodies`.
+        /// Faces inside `bodies` (a partial body counts only the faces it has).
         public internal(set) var tessellatedFaceCount = 0
         public var triangleCount: Int { bodies.reduce(0) { $0 + $1.triangleCount } }
 

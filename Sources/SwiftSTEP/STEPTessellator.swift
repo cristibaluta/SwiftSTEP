@@ -28,6 +28,7 @@ final class STEPTessellator {
     private let reader: STEPFaceReader
     private let model: STEP.EdgeModel
     private let tolerance: Double
+    private let keepPartial: Bool
     /// Rebuilt for each body from the accuracy its context declares.
     private var tolerances: STEPTolerances
     private var surfaces: STEP.SurfaceModel
@@ -38,6 +39,7 @@ final class STEPTessellator {
         reader = STEPFaceReader(file: file, chordTolerance: options.chordToleranceMM)
         self.model = model
         tolerance = options.chordToleranceMM
+        keepPartial = options.keepPartialSurfaces
         tolerances = STEPTolerances(chord: options.chordToleranceMM)
         surfaces = STEP.SurfaceModel(origin: model.bounds?.workpieceOrigin ?? .zero)
     }
@@ -90,6 +92,7 @@ final class STEPTessellator {
         var mesh = STEP.BodyMesh(id: body.id)
         var surfaceCache: [Int: STEP.Surface] = [:]
         var failed = 0
+        var failedIDs: [Int] = []
 
         for face in faces {
             try Task.checkCancellation()
@@ -106,19 +109,20 @@ final class STEPTessellator {
                 }
                 try tessellateFace(face.id, parsed: parsed, surface: surface, shellFlipped: face.flipped,
                                    edges: edgeByID, into: &mesh)
-                if failed > 0 {
+                if failed > 0 && !keepPartial {
                     // The body is already lost. Faces are still run so that every problem is
                     // reported, not just the first, but their triangles are thrown away at once.
                     triangleBudget += mesh.triangleCount
                     mesh = STEP.BodyMesh(id: body.id)
                 }
             } catch let error as STEP.ParseError {
-                if failed == 0 {
+                if failed == 0 && !keepPartial {
                     // First failure: give back what this body already took from the budget.
                     triangleBudget += mesh.triangleCount
                     mesh = STEP.BodyMesh(id: body.id)
                 }
                 failed += 1
+                failedIDs.append(face.id)
                 let type = surfaceID.flatMap { reader.surfaceTypeName($0) }
                 let reason = explain(error.description, edges: edges)
                 surfaces.faceFailures.append(STEP.FaceFailure(bodyID: body.id, faceID: face.id, surfaceID: surfaceID,
@@ -128,15 +132,23 @@ final class STEPTessellator {
             }
         }
 
-        if failed > 0 {
-            surfaces.failedFaceCount += failed
+        surfaces.failedFaceCount += failed
+        if failed > 0 && (!keepPartial || mesh.triangleCount == 0) {
             surfaces.unsurfacedBodies.append(body.id)
-            diagnose(body.id.entityID,
-                     "No filled faces for body #\(body.id.entityID): \(failed) of \(faces.count) faces could not be tessellated, so the whole body is left unfilled (edges are still drawn)",
+            let why = keepPartial
+                ? "all \(faces.count) faces could not be tessellated"
+                : "\(failed) of \(faces.count) faces could not be tessellated, so the whole body is left unfilled"
+            diagnose(body.id.entityID, "No filled faces for body #\(body.id.entityID): \(why) (edges are still drawn)",
                      .skipped, code: "body-unfilled")
         } else if mesh.triangleCount > 0 {
-            surfaces.tessellatedFaceCount += faces.count
+            surfaces.tessellatedFaceCount += faces.count - failed
+            mesh.failedFaceIDs = failedIDs
             surfaces.bodies.append(mesh)
+            if failed > 0 {
+                diagnose(body.id.entityID,
+                         "Body #\(body.id.entityID) is partly filled: \(failed) of \(faces.count) faces could not be tessellated and are left out of the mesh (edges behind them are not hidden)",
+                         .warning, code: "body-partial")
+            }
         } else {
             diagnose(body.id.entityID, "Body #\(body.id.entityID): all \(faces.count) faces tessellated to zero triangles",
                      .warning, code: "zero-triangles")

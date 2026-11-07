@@ -29,6 +29,8 @@ final class Viewer: ObservableObject {
         var text = "\(geometry.edges.edges.count) edges, \(geometry.surfaces.triangleCount) triangles"
         let unfilled = geometry.surfaces.unsurfacedBodies.count
         if unfilled > 0 { text += ", \(unfilled) unfilled bod\(unfilled == 1 ? "y" : "ies")" }
+        let partial = geometry.surfaces.partialBodies.count
+        if partial > 0 { text += ", \(partial) partly filled" }
         if notes > 0 { text += ", \(notes) notes" }
         return text
     }

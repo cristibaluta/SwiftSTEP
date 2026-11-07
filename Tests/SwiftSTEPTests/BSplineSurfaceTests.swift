@@ -314,10 +314,10 @@ private func quarterCircleSurface() throws -> STEP.BSplineSurface {
         #expect(abs(volume - 1000.0 / 3) < 0.005 * 1000.0 / 3)
     }
 
-    @Test func unsupportedSweptSurfaceStillDropsTheBodyAndIsNamed() throws {
+    @Test func unsupportedSweptSurfaceDropsTheBodyWhenPartialMeshesAreOffAndIsNamed() throws {
         let data = QuarterDisc.data(rational: false, edits: [
             ("B_SPLINE_SURFACE_WITH_KNOTS('',2,1,", "SURFACE_OF_LINEAR_EXTRUSION('',2,1,")])
-        let geometry = try STEP.readGeometry(data: data)
+        let geometry = try STEP.readGeometry(data: data, options: STEP.Options(keepPartialSurfaces: false))
         #expect(geometry.edges.edges.count == 9)
         #expect(geometry.surfaces.bodies.isEmpty)
         #expect(geometry.surfaces.unsurfacedBodies.count == 1)
@@ -329,9 +329,29 @@ private func quarterCircleSurface() throws -> STEP.BSplineSurface {
         let data = QuarterDisc.data(rational: true, edits: [
             ("RATIONAL_B_SPLINE_SURFACE(((1.,1.),(0.7071067811865476,0.7071067811865476),(1.,1.)))",
              "RATIONAL_B_SPLINE_SURFACE(((1.,1.),(1.,1.),(1.,1.)))")])
-        let geometry = try STEP.readGeometry(data: data)
+        let geometry = try STEP.readGeometry(data: data, options: STEP.Options(keepPartialSurfaces: false))
         #expect(geometry.surfaces.bodies.isEmpty)
         #expect(geometry.surfaces.unsurfacedBodies.count == 1)
         #expect(geometry.surfaces.diagnostics.contains { $0.message.contains("off its B-spline surface") })
+
+        // By default the four good faces are kept and the bad wall is named.
+        let partial = try STEP.readGeometry(data: data)
+        let mesh = try #require(partial.surfaces.bodies.first)
+        #expect(partial.surfaces.unsurfacedBodies.isEmpty && mesh.isPartial)
+        #expect(mesh.failedFaceIDs.count == 1)
+        #expect(partial.surfaces.faceFailures.map(\.faceID) == mesh.failedFaceIDs.map { Optional($0) })
+        #expect(partial.surfaces.tessellatedFaceCount == 4 && partial.surfaces.failedFaceCount == 1)
+        #expect(partial.surfaces.partialBodies == [mesh.id])
+        #expect(partial.surfaces.diagnostics.contains { $0.code == "body-partial" })
+        #expect(partial.report.contains("partly filled"))
+    }
+
+    @Test func aSweptSurfaceFaceIsLeftOutOfAPartialMesh() throws {
+        let data = QuarterDisc.data(rational: false, edits: [
+            ("B_SPLINE_SURFACE_WITH_KNOTS('',2,1,", "SURFACE_OF_LINEAR_EXTRUSION('',2,1,")])
+        let geometry = try STEP.readGeometry(data: data)
+        let mesh = try #require(geometry.surfaces.bodies.first)
+        #expect(mesh.isPartial && mesh.failedFaceIDs.count == 1)
+        #expect(geometry.surfaces.diagnostics.contains { $0.message.contains("SURFACE_OF_LINEAR_EXTRUSION") })
     }
 }

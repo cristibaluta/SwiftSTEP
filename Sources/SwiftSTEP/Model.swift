@@ -246,12 +246,18 @@ extension STEP {
         /// Most entities a file may define before the import is refused. Protects against runaway
         /// or hostile files; raise it for very large assemblies.
         public var maximumEntityCount: Int
+        /// `readGeometry` only. When a face cannot be tessellated, keep the faces that worked and
+        /// mark the body's mesh `isPartial` (default). A missing face can only under-occlude: edges
+        /// behind it show as visible. Set `false` to leave such a body without any mesh, as in
+        /// earlier versions, for callers that must never classify an edge as visible by mistake.
+        public var keepPartialSurfaces: Bool
 
         public init(assumedUnitScaleToMM: Double? = nil, chordToleranceMM: Double = 0.01,
-                    maximumEntityCount: Int = 2_000_000) {
+                    maximumEntityCount: Int = 2_000_000, keepPartialSurfaces: Bool = true) {
             self.assumedUnitScaleToMM = assumedUnitScaleToMM
             self.chordToleranceMM = chordToleranceMM
             self.maximumEntityCount = maximumEntityCount
+            self.keepPartialSurfaces = keepPartialSurfaces
         }
     }
 
@@ -279,19 +285,37 @@ extension STEP.Geometry {
             lines.append("  edge note \(note)")
         }
 
+        let partial = faces.partialBodies
         if !faces.unsurfacedBodies.isEmpty {
             lines.append("")
-            lines.append("\(faces.unsurfacedBodies.count) bod\(faces.unsurfacedBodies.count == 1 ? "y has" : "ies have") no filled faces "
-                         + "(one failing face drops its whole body, because a partial mesh would hide the wrong edges):")
+            lines.append("\(faces.unsurfacedBodies.count) bod\(faces.unsurfacedBodies.count == 1 ? "y has" : "ies have") no filled faces:")
         }
-        for body in faces.unsurfacedBodies {
+        Self.describeFailures(of: faces.unsurfacedBodies, in: faces, into: &lines)
+        if !partial.isEmpty {
+            lines.append("")
+            lines.append("\(partial.count) bod\(partial.count == 1 ? "y is" : "ies are") only partly filled "
+                         + "(the failed faces are left out, so an edge behind one of them is not hidden):")
+        }
+        Self.describeFailures(of: partial, in: faces, into: &lines)
+
+        let other = faces.diagnostics.filter { note in
+            !faces.faceFailures.contains { $0.faceID == note.entityID && $0.faceID != nil }
+                && !faces.unsurfacedBodies.contains { $0.entityID == note.entityID }
+        }
+        for note in other { lines.append("  surface note \(note)") }
+        return lines.joined(separator: "\n")
+    }
+
+    /// For each body, its failed faces grouped by surface kind and reason, with a hint.
+    private static func describeFailures(of bodies: [STEP.BodyID], in faces: STEP.SurfaceModel, into lines: inout [String]) {
+        for body in bodies {
             let failures = faces.faceFailures.filter { $0.bodyID == body }
             lines.append("  Body #\(body.entityID)")
             // Group faces that fail for the same reason on the same kind of surface.
             var groups: [String: [STEP.FaceFailure]] = [:]
             var order: [String] = []
             for failure in failures {
-                let key = "\(failure.surfaceType ?? "-")|\(Self.normalized(failure.reason))"
+                let key = "\(failure.surfaceType ?? "-")|\(normalized(failure.reason))"
                 if groups[key] == nil { order.append(key) }
                 groups[key, default: []].append(failure)
             }
@@ -307,18 +331,11 @@ extension STEP.Geometry {
                     lines.append("    \(group.count) face\(group.count == 1 ? "" : "s")\(kind): \(first.reason)")
                     lines.append("      faces \(ids)\(more)")
                 }
-                if let hint = Self.hint(for: first.reason, surfaceType: first.surfaceType) {
+                if let hint = hint(for: first.reason, surfaceType: first.surfaceType) {
                     lines.append("      → \(hint)")
                 }
             }
         }
-
-        let other = faces.diagnostics.filter { note in
-            !faces.faceFailures.contains { $0.faceID == note.entityID && $0.faceID != nil }
-                && !faces.unsurfacedBodies.contains { $0.entityID == note.entityID }
-        }
-        for note in other { lines.append("  surface note \(note)") }
-        return lines.joined(separator: "\n")
     }
 
     /// Entity numbers stripped, so "at #12" and "at #40" group together.
