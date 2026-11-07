@@ -150,7 +150,7 @@ extension STEP {
         }
 
         /// Inverse of `point`, for points on (or very near) the surface.
-        func parameters(of point: SIMD3<Double>) -> Parameters {
+        func parameters(of point: SIMD3<Double>, near hint: Parameters? = nil) -> Parameters {
             switch self {
                 case .plane(let f):
                     let l = Self.local(f, point)
@@ -168,7 +168,7 @@ extension STEP {
                     let l = Self.local(f, point)
                     return Parameters(u: l.u, v: atan2(l.z, l.radial - major), isPole: false)
                 case .bspline(let spline):
-                    let projected = spline.parameters(of: point)
+                    let projected = spline.parameters(of: point, near: hint.map { (u: $0.u, v: $0.v) })
                     return Parameters(u: projected.u, v: projected.v, isPole: false, distance: projected.distance)
             }
         }

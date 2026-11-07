@@ -289,7 +289,11 @@ final class STEPTessellator {
     /// Unwraps the loop's angles so neighbouring points stay within half a turn, and counts how
     /// many turns it makes.
     private func parametrize(_ points: [SIMD3<Double>], on surface: STEP.Surface) throws -> ParamLoop {
-        let raw = points.map { surface.parameters(of: $0) }
+        // Each point starts its search from the one before it, so a loop stays on one sheet of a
+        // surface that crosses itself.
+        var raw: [STEP.Surface.Parameters] = []
+        raw.reserveCapacity(points.count)
+        for point in points { raw.append(surface.parameters(of: point, near: raw.last)) }
         // Analytic surfaces project exactly. A B-spline's inverse is searched for, and a boundary
         // that does not lie on it (a damaged file, or a search that missed) would be meshed
         // somewhere else, so it fails with the distance instead.

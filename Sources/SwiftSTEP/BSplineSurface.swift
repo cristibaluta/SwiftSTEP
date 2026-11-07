@@ -221,15 +221,26 @@ extension STEP {
         /// A coarse table over every knot span picks the start, then Gauss-Newton on the distance
         /// with backtracking, clamped to the domain. Results within 1e-9 of a domain end snap to it,
         /// so boundary points that belong to a side get the side's exact parameter.
-        func parameters(of target: SIMD3<Double>) -> (u: Double, v: Double, distance: Double) {
-            var best = 0
-            var bestSquared = Double.infinity
-            for (index, sample) in tablePoints.enumerated() {
-                let squared = simd_distance_squared(sample, target)
-                if squared < bestSquared { best = index; bestSquared = squared }
+        /// `hint` is the parameters of the previous point along a boundary. A surface that passes
+        /// through itself or its own axis (a spindle torus) has two parameter pairs for some points;
+        /// starting from the neighbour keeps a loop on one sheet instead of jumping between them.
+        func parameters(of target: SIMD3<Double>, near hint: (u: Double, v: Double)? = nil)
+            -> (u: Double, v: Double, distance: Double) {
+            var u: Double
+            var v: Double
+            if let hint {
+                u = hint.u
+                v = hint.v
+            } else {
+                var best = 0
+                var bestSquared = Double.infinity
+                for (index, sample) in tablePoints.enumerated() {
+                    let squared = simd_distance_squared(sample, target)
+                    if squared < bestSquared { best = index; bestSquared = squared }
+                }
+                u = tableU[best / tableV.count]
+                v = tableV[best % tableV.count]
             }
-            var u = tableU[best / tableV.count]
-            var v = tableV[best % tableV.count]
             var current = simd_distance_squared(point(u: u, v: v), target)
             let uLength = uDomain.upperBound - uDomain.lowerBound
             let vLength = vDomain.upperBound - vDomain.lowerBound
@@ -271,7 +282,13 @@ extension STEP {
             }
             u = Self.snapped(u, to: uDomain)
             v = Self.snapped(v, to: vDomain)
-            return (u, v, simd_distance(point(u: u, v: v), target))
+            let distance = simd_distance(point(u: u, v: v), target)
+            if hint != nil {
+                // The neighbour's sheet did not reach the point: search from scratch.
+                let extent = tablePoints.reduce(0.0) { max($0, simd_distance($1, tablePoints[0])) }
+                if distance > 1e-7 * extent + 1e-9 { return parameters(of: target) }
+            }
+            return (u, v, distance)
         }
 
         /// `value` kept inside `domain`: wrapped by whole periods when the surface is periodic
