@@ -10,9 +10,14 @@ extension STEP {
     }
 
     /// A note about one entity: an unsupported curve, a skipped edge, a sampling cap.
-    public struct Diagnostic: Sendable, CustomStringConvertible {
+    public struct Diagnostic: Sendable, Equatable, CustomStringConvertible {
         public let entityID: Int?
         public let message: String
+
+        public init(entityID: Int?, message: String) {
+            self.entityID = entityID
+            self.message = message
+        }
 
         public var description: String { entityID.map { "#\($0): \(message)" } ?? message }
     }
@@ -47,9 +52,16 @@ extension STEP {
         public let contextID: Int
         public let unitScaleToMM: Double
         public let unitsAssumed: Bool
+
+        public init(id: BodyID, contextID: Int, unitScaleToMM: Double, unitsAssumed: Bool) {
+            self.id = id
+            self.contextID = contextID
+            self.unitScaleToMM = unitScaleToMM
+            self.unitsAssumed = unitsAssumed
+        }
     }
 
-    public struct Edge: Sendable {
+    public struct Edge: Sendable, Identifiable {
         public enum CurveKind: Sendable {
             case line
             /// Partial circular arc, sampled to a polyline.
@@ -74,7 +86,18 @@ extension STEP {
         public let adjacentFaceIDs: [Int]
         /// Distance (mm) between the sampled polyline and the true curve: a bound for circles
         /// and ellipses, a probed estimate for B-splines. 0 for lines and file polylines.
-        public var chordError: Double = 0
+        public let chordError: Double
+
+        public init(id: EdgeID, kind: CurveKind, points: [SIMD3<Double>], startVertexID: Int, endVertexID: Int,
+                    adjacentFaceIDs: [Int], chordError: Double = 0) {
+            self.id = id
+            self.kind = kind
+            self.points = points
+            self.startVertexID = startVertexID
+            self.endVertexID = endVertexID
+            self.adjacentFaceIDs = adjacentFaceIDs
+            self.chordError = chordError
+        }
     }
 
     public struct Bounds: Sendable {
@@ -122,10 +145,15 @@ extension STEP {
         /// Maximum sagitta (mm) of sampled curves. Display geometry only: a sampled polyline
         /// is not a machining contour. Must be finite and positive.
         public var chordToleranceMM: Double
+        /// Most entities a file may define before the import is refused. Protects against runaway
+        /// or hostile files; raise it for very large assemblies.
+        public var maximumEntityCount: Int
 
-        public init(assumedUnitScaleToMM: Double? = nil, chordToleranceMM: Double = 0.01) {
+        public init(assumedUnitScaleToMM: Double? = nil, chordToleranceMM: Double = 0.01,
+                    maximumEntityCount: Int = 2_000_000) {
             self.assumedUnitScaleToMM = assumedUnitScaleToMM
             self.chordToleranceMM = chordToleranceMM
+            self.maximumEntityCount = maximumEntityCount
         }
     }
 

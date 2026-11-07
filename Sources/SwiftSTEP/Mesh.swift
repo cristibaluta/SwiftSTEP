@@ -13,6 +13,13 @@ extension STEP {
         public let sameSense: Bool
         /// Triangle numbers (index `3 * n ..< 3 * n + 3` in `indices`) that belong to this face.
         public let triangles: Range<Int>
+
+        public init(faceID: Int, surface: Surface, sameSense: Bool, triangles: Range<Int>) {
+            self.faceID = faceID
+            self.surface = surface
+            self.sameSense = sameSense
+            self.triangles = triangles
+        }
     }
 
     /// One body's triangle mesh. Positions are Float, millimetres relative to

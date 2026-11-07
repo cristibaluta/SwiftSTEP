@@ -69,7 +69,7 @@ Surfaces (`readGeometry`): `PLANE` (holes included), `CYLINDRICAL_SURFACE`, `CON
 `SPHERICAL_SURFACE`, `TOROIDAL_SURFACE` and `B_SPLINE_SURFACE_WITH_KNOTS` (rational or not, simple or
 complex record), trimmed by their loops. A face whose boundary lies more than the chord tolerance off its
 B-spline surface fails with the distance. Swept surfaces (revolution, linear extrusion), B-spline surfaces
-without explicit knots, closed or collapsed-side B-spline surfaces, faces
+without explicit knots, collapsed-side B-spline surfaces, faces
 reaching a sphere pole or cone apex, faces wrapping a torus tube, vertex/poly loops and `ORIENTED_FACE` are
 not supported: such a face, or a skipped boundary edge, drops that body's whole mesh (a partial occluder
 would hide visible edges) and the body is listed in `unsurfacedBodies`. Cap: 1,000,000 triangles per import.

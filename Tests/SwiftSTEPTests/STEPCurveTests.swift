@@ -908,3 +908,51 @@ struct STEPBSplineTests {
         #expect(model.edges.isEmpty && model.diagnostics.contains { $0.message.contains("knots") })
     }
 }
+
+@Suite("STEP file hardening")
+struct STEPHardeningTests {
+    private func lineFile(from start: SIMD3<Double> = .zero, to end: SIMD3<Double> = SIMD3(10, 0, 0)) -> Data {
+        singleEdge(start: start, end: end) { $0.line(from: .zero, direction: SIMD3(1, 0, 0)) }
+    }
+
+    @Test func byteOrderMarkIsSkipped() throws {
+        let data = Data([0xEF, 0xBB, 0xBF]) + lineFile()
+        #expect(try parse(data).edges.count == 1)
+    }
+
+    @Test func userDefinedKeywordsAreIndexedAndIgnored() throws {
+        let text = String(decoding: lineFile(), as: UTF8.self)
+            .replacingOccurrences(of: "\nENDSEC;\nEND-ISO", with: "\n#9999=!MY_ENTITY('x',(1,2));\nENDSEC;\nEND-ISO")
+        #expect(text.contains("!MY_ENTITY"))
+        #expect(try parse(Data(text.utf8)).edges.count == 1)
+    }
+
+    @Test func vertexOffItsLineIsSkippedWithADiagnostic() throws {
+        let off = try parse(lineFile(from: SIMD3(0, 3, 0)))
+        #expect(off.edges.isEmpty && off.diagnostics.contains { $0.message.contains("not on its line") })
+        // A vertex a few thousandths of a millimetre off is within tolerance.
+        let close = try parse(lineFile(from: SIMD3(0, 0.002, 0)))
+        #expect(close.edges.count == 1)
+    }
+
+    @Test func entityCapIsAnOption() throws {
+        let data = lineFile()
+        #expect(throws: STEP.ParseError.self) { try parse(data, STEP.Options(maximumEntityCount: 3)) }
+        #expect(try parse(data).edges.count == 1)
+        #expect(STEP.Options().maximumEntityCount == 2_000_000)
+    }
+
+    @Test func publicTypesCanBeConstructedAndCompared() {
+        let frame = STEP.Frame(origin: .zero, x: SIMD3(1, 0, 0), y: SIMD3(0, 1, 0), z: SIMD3(0, 0, 1))
+        let body = STEP.BodyID(representationID: 1, entityID: 2)
+        let id = STEP.EdgeID(importID: UUID(), bodyID: body, entityID: 3)
+        let edge = STEP.Edge(id: id, kind: .line, points: [.zero, SIMD3(1, 0, 0)], startVertexID: 4, endVertexID: 5,
+                             adjacentFaceIDs: [6])
+        #expect(edge.id == id && edge.chordError == 0)
+        let info = STEP.BodyInfo(id: body, contextID: 7, unitScaleToMM: 1, unitsAssumed: false)
+        #expect(info.contextID == 7)
+        let mesh = STEP.FaceMesh(faceID: 6, surface: .plane(frame), sameSense: true, triangles: 0..<2)
+        #expect(mesh.triangles.count == 2)
+        #expect(STEP.Diagnostic(entityID: 1, message: "a") == STEP.Diagnostic(entityID: 1, message: "a"))
+    }
+}

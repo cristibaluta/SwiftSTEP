@@ -4,7 +4,7 @@ import Foundation
 enum STEPEdgeImporter {
     static func parse(data: Data, importID: UUID = UUID(), options: STEP.Options = STEP.Options()) throws -> STEP.EdgeModel {
         try Task.checkCancellation()
-        let file = try STEPFile(data: data)
+        let file = try STEPFile(data: data, maximumEntityCount: options.maximumEntityCount)
         return try STEPEdgeExtractor(file: file, importID: importID, options: options).extract()
     }
 
@@ -12,7 +12,7 @@ enum STEPEdgeImporter {
     /// once and shares it between both stages. Synchronous: call it from a background task.
     static func parseGeometry(data: Data, importID: UUID = UUID(), options: STEP.Options = STEP.Options()) throws -> STEP.Geometry {
         try Task.checkCancellation()
-        let file = try STEPFile(data: data)
+        let file = try STEPFile(data: data, maximumEntityCount: options.maximumEntityCount)
         let edges = try STEPEdgeExtractor(file: file, importID: importID, options: options).extract()
         // Surfaces only add hidden-edge display: if they cannot be built the wireframe still loads.
         // Cancellation is not a failure to degrade from, so it propagates.

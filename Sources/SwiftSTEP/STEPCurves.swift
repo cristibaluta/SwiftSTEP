@@ -197,6 +197,7 @@ final class STEPCurveResolver {
             // A line is fully determined by its vertices; trims add nothing for display.
             let points = [try vertex(startVertexID), try vertex(endVertexID)]
             guard points[0] != points[1] else { throw STEP.ParseError("Degenerate line edge") }
+            try checkVerticesOnLine(basisID, vertexIDs: (startVertexID, endVertexID), points: (points[0], points[1]))
             return STEPResolvedCurve(kind: .line, points: points, chordError: 0, warning: nil)
         }
         if file.hasType(basisID, "CIRCLE") || file.hasType(basisID, "ELLIPSE") {
@@ -219,6 +220,24 @@ final class STEPCurveResolver {
         }
         let names = try file.components(basisID).map(\.type).joined(separator: "/")
         throw STEP.ParseError("Unsupported curve \(names) at #\(basisID); edge skipped")
+    }
+
+    /// Both vertices must lie on the LINE, within the same kind of tolerance the other curves use.
+    /// A line whose own definition cannot be read is not checked: its vertices still define the edge.
+    private func checkVerticesOnLine(_ lineID: Int, vertexIDs: (start: Int, end: Int),
+                                     points: (start: SIMD3<Double>, end: SIMD3<Double>)) throws {
+        guard let parameters = try? file.parameters(lineID, type: "LINE"),
+              let origin = try? cartesianPoint(parameters.reference(at: 1)),
+              let vectorParameters = try? file.parameters(parameters.reference(at: 2), type: "VECTOR"),
+              let axis = try? direction(vectorParameters.reference(at: 1)) else { return }
+        let length = simd_distance(points.start, points.end)
+        let tolerance = max(Self.relativeVertexTolerance * length, min(chordTolerance, 1e-2 * length), 1e-7)
+        for (isStart, vertexID, point) in [(true, vertexIDs.start, points.start), (false, vertexIDs.end, points.end)] {
+            let offset = simd_length(simd_cross(point - origin, axis))
+            guard offset <= tolerance else {
+                throw STEP.ParseError("Edge \(isStart ? "start" : "end") vertex #\(vertexID) is not on its line (off by \(offset) mm)")
+            }
+        }
     }
 
     // MARK: Conics

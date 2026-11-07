@@ -10,9 +10,12 @@ final class STEPFile {
     private(set) var index: [Int: [ComponentRange]] = [:]
     private var cache: [Int: [STEPComponent]] = [:]
 
-    init(data: Data) throws {
+    init(data: Data, maximumEntityCount: Int = 2_000_000) throws {
         self.data = data
-        var lexer = STEPTokenizer(data: data)
+        // Some exporters write a UTF-8 byte order mark before ISO-10303-21; it is not part of the grammar.
+        let bom: [UInt8] = [0xEF, 0xBB, 0xBF]
+        let start = data.starts(with: bom) ? data.startIndex + bom.count : data.startIndex
+        var lexer = STEPTokenizer(data: data, range: start..<data.endIndex)
         try lexer.expect(.word("ISO-10303-21"))
         try lexer.expect(.symbol(59))
         try lexer.expect(.word("HEADER"))
@@ -33,7 +36,7 @@ final class STEPFile {
             if token == .word("ENDSEC") { break }
             guard case .reference(let id) = token else { throw STEP.ParseError("Expected entity record") }
             guard index[id] == nil else { throw STEP.ParseError("Duplicate entity #\(id)") }
-            guard index.count < 2_000_000 else { throw STEP.ParseError("Entity count limit exceeded") }
+            guard index.count < maximumEntityCount else { throw STEP.ParseError("Entity count limit exceeded") }
             try lexer.expect(.symbol(61))
             let first = try lexer.next()
             var components: [ComponentRange] = []

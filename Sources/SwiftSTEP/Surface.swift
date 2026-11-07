@@ -8,6 +8,13 @@ extension STEP {
         public let x: SIMD3<Double>
         public let y: SIMD3<Double>
         public let z: SIMD3<Double>
+
+        public init(origin: SIMD3<Double>, x: SIMD3<Double>, y: SIMD3<Double>, z: SIMD3<Double>) {
+            self.origin = origin
+            self.x = x
+            self.y = y
+            self.z = z
+        }
     }
 
     /// Surface descriptors retained next to the triangle mesh. Steps 7 and 8

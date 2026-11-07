@@ -1,7 +1,7 @@
 import Foundation
 
 /// Part 21 values. Enumeration spelling is retained (including T/F/U).
-indirect enum STEPValue: Equatable, Sendable {
+enum STEPValue: Equatable, Sendable {
     case integer(Int), real(Double), string(String), reference(Int), enumeration(String)
     case list([STEPValue]), typed(String, [STEPValue]), unset, derived
 

@@ -85,7 +85,8 @@ struct STEPTokenizer {
             }
             return .reference(id)
         }
-        if letter(b) {
+        // A user-defined keyword is `!NAME`; it lexes as a word like any other entity type.
+        if letter(b) || (b == 33 && position < end && letter(data[position])) {
             while position < end && (letter(data[position]) || digit(data[position]) || data[position] == 45) {
                 position += 1
                 try progress(from: start)
