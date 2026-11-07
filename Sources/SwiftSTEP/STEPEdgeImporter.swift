@@ -21,7 +21,8 @@ enum STEPEdgeImporter {
             surfaces = try STEPTessellator(file: file, model: edges, options: options).tessellate()
         } catch let error as STEP.ParseError {
             var unavailable = STEP.SurfaceModel()
-            unavailable.diagnostics = [STEP.Diagnostic(entityID: nil, message: "Surfaces unavailable: \(error.description)")]
+            unavailable.diagnostics = [STEP.Diagnostic(entityID: nil, message: "Surfaces unavailable: \(error.description)",
+                                                      severity: .warning, code: "surfaces-unavailable")]
             surfaces = unavailable
         }
         return STEP.Geometry(edges: edges, surfaces: surfaces)

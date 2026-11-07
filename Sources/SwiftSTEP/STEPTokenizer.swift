@@ -25,7 +25,7 @@ struct STEPTokenizer {
     private func progress(from start: Int) throws {
         if (position - start) % 4096 == 0 { try Task.checkCancellation() }
         guard position - start <= Self.maximumTokenBytes else {
-            throw STEP.ParseError("Token exceeds size limit at byte \(start)")
+            throw STEP.ParseError("Token exceeds size limit at byte \(start)", kind: .limitExceeded)
         }
     }
     private func text(_ range: Range<Int>) -> String {
@@ -52,7 +52,7 @@ struct STEPTokenizer {
                     }
                     position += 1
                 }
-                guard closed else { throw STEP.ParseError("Unterminated comment") }
+                guard closed else { throw STEP.ParseError("Unterminated comment", kind: .truncated) }
             } else { break }
         }
         guard position < end else { return .end }
@@ -72,7 +72,7 @@ struct STEPTokenizer {
                     } else { return .string(String(decoding: bytes, as: UTF8.self)) }
                 } else { bytes.append(current) }
             }
-            throw STEP.ParseError("Unterminated string at byte \(start)")
+            throw STEP.ParseError("Unterminated string at byte \(start)", kind: .truncated)
         }
         if b == 35 {
             let digits = position
@@ -145,6 +145,10 @@ struct STEPTokenizer {
     }
 
     mutating func expect(_ token: Token) throws {
-        guard try next() == token else { throw STEP.ParseError("Expected \(token) near byte \(position)") }
+        let found = try next()
+        guard found == token else {
+            // Running out of file where something was due means the file was cut short.
+            throw STEP.ParseError("Expected \(token) near byte \(position)", kind: found == .end ? .truncated : .malformed)
+        }
     }
 }

@@ -24,16 +24,17 @@ final class STEPEdgeExtractor {
     func extract() throws -> STEP.EdgeModel {
         try Task.checkCancellation()
         if let scale = options.assumedUnitScaleToMM, !scale.isFinite || scale <= 0 {
-            throw STEP.ParseError("Assumed unit scale must be finite and positive")
+            throw STEP.ParseError("Assumed unit scale must be finite and positive", kind: .invalidOptions)
         }
         guard options.chordToleranceMM.isFinite, options.chordToleranceMM > 0 else {
-            throw STEP.ParseError("Chord tolerance must be finite and positive")
+            throw STEP.ParseError("Chord tolerance must be finite and positive", kind: .invalidOptions)
         }
+        model.header = file.header()
         let assemblies = file.entities(ofTypes: ["MAPPED_ITEM",
                                                  "NEXT_ASSEMBLY_USAGE_OCCURRENCE",
                                                  "REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION"])
         guard assemblies.isEmpty else {
-            throw STEP.ParseError("Assembly placement is not supported yet (entity #\(assemblies[0]))")
+            throw STEP.ParseError("Assembly placement is not supported yet (entity #\(assemblies[0]))", kind: .assembly)
         }
         model.indexedEntityCount = file.index.count
 
@@ -59,17 +60,23 @@ final class STEPEdgeExtractor {
                 assumed = false
             } catch let error as STEP.ParseError {
                 guard let fallback = options.assumedUnitScaleToMM else {
-                    throw error
+                    throw STEP.ParseError(error.description, kind: .unresolvedUnits(contextID: contextID))
                 }
                 scale = fallback
                 assumed = true
-                diagnose(contextID, "\(error); explicitly assuming \(fallback) mm per source unit")
+                diagnose(contextID, "\(error); explicitly assuming \(fallback) mm per source unit",
+                         .warning, code: "assumed-units")
             }
+            // The accuracy is optional: a context whose uncertainty cannot be read declares none.
+            let uncertainty = (try? STEPUnits(file: file).uncertaintyMM(contextID: contextID)) ?? nil
+            let tolerances = STEPTolerances(chord: options.chordToleranceMM, declaredUncertainty: uncertainty)
             let resolver = STEPCurveResolver(file: file, scaleToMM: scale, chordTolerance: options.chordToleranceMM,
+                                             tolerances: tolerances,
                                              angleScaleToRadians: { try self.angleScale(context: contextID) })
             for bodyID in bodyIDs {
                 let identity = STEP.BodyID(representationID: representationID, entityID: bodyID)
-                model.bodies.append(STEP.BodyInfo(id: identity, contextID: contextID, unitScaleToMM: scale, unitsAssumed: assumed))
+                model.bodies.append(STEP.BodyInfo(id: identity, contextID: contextID, unitScaleToMM: scale,
+                                                     unitsAssumed: assumed, uncertaintyMM: tolerances.declaredUncertainty))
                 let adjacency = try collectEdges(bodyID: bodyID)
                 model.reachableEdgeCount += adjacency.count
                 for edgeID in adjacency.keys.sorted() {
@@ -82,19 +89,28 @@ final class STEPEdgeExtractor {
                             else { model.bounds?.include(point) }
                         }
                     } catch let error as STEP.ParseError {
-                        diagnose(edgeID, error.description)
+                        diagnose(edgeID, error.description, .skipped, code: Self.code(forEdgeFailure: error.description))
                     }
                 }
             }
         }
-        if model.bodies.isEmpty { diagnose(nil, "No supported solid/shell bodies in shape representations") }
-        if model.edges.isEmpty { diagnose(nil, "No supported edges were extracted") }
+        if model.bodies.isEmpty {
+            diagnose(nil, "No supported solid/shell bodies in shape representations", .warning, code: "no-bodies")
+        }
+        if model.edges.isEmpty { diagnose(nil, "No supported edges were extracted", .warning, code: "no-edges") }
 
         return model
     }
 
-    private func diagnose(_ id: Int?, _ message: String) {
-        model.diagnostics.append(STEP.Diagnostic(entityID: id, message: message))
+    private func diagnose(_ id: Int?, _ message: String, _ severity: STEP.Diagnostic.Severity, code: String) {
+        model.diagnostics.append(STEP.Diagnostic(entityID: id, message: message, severity: severity, code: code))
+    }
+
+    /// The code for an edge that was skipped, from the reason the curve resolver gave.
+    private static func code(forEdgeFailure message: String) -> String {
+        if message.contains("Unsupported curve") { return "unsupported-curve" }
+        if message.contains("is not on its") { return "vertex-off-curve" }
+        return "edge-skipped"
     }
 
     private struct Visit: Hashable { let id: Int; let face: Int? }
@@ -105,7 +121,7 @@ final class STEPEdgeExtractor {
         func walk(_ id: Int, face: Int?, ancestors: Set<Int>) throws {
             try Task.checkCancellation()
             guard ancestors.count < 128, !ancestors.contains(id) else {
-                diagnose(id, "Cyclic/deep topology reference")
+                diagnose(id, "Cyclic/deep topology reference", .warning, code: "topology-cycle")
                 return
             }
             guard visited.insert(Visit(id: id, face: face)).inserted else { return }
@@ -145,7 +161,7 @@ final class STEPEdgeExtractor {
                 }
                 for child in children { try walk(child, face: nextFace, ancestors: ancestors) }
             } catch let error as STEP.ParseError {
-                diagnose(id, error.description)
+                diagnose(id, error.description, .skipped, code: "unsupported-topology")
             }
         }
         try walk(bodyID, face: nil, ancestors: [])
@@ -162,7 +178,7 @@ final class STEPEdgeExtractor {
         // Vertex order is canonical EDGE_CURVE order, independent of ORIENTED_EDGE uses.
         let curve = try resolver.resolve(curveID: p.reference(at: 3), startVertexID: start, endVertexID: end,
                                          sameSense: sense == "T")
-        if let warning = curve.warning { diagnose(id, warning) }
+        if let warning = curve.warning { diagnose(id, warning, .warning, code: "chord-cap") }
         return STEP.Edge(id: STEP.EdgeID(importID: model.importID, bodyID: body, entityID: id),
                         kind: curve.kind,
                         points: curve.points,

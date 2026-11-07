@@ -163,14 +163,15 @@ final class STEPCurveResolver {
     private let chordTolerance: Double
     private let angleScale: () throws -> Double
     private static let wrappers: Set<String> = ["SURFACE_CURVE", "SEAM_CURVE", "INTERSECTION_CURVE"]
-    /// Slack (rad) when comparing trim angles with vertex angles and detecting a full turn.
-    private static let angularTolerance = 1e-3
+    private let tolerances: STEPTolerances
 
-    init(file: STEPFile, scaleToMM: Double, chordTolerance: Double,
+    /// `tolerances` defaults to what `chordTolerance` alone implies (no accuracy declared by the file).
+    init(file: STEPFile, scaleToMM: Double, chordTolerance: Double, tolerances: STEPTolerances? = nil,
          angleScaleToRadians: @escaping () throws -> Double) {
         self.file = file
         scale = scaleToMM
         self.chordTolerance = chordTolerance
+        self.tolerances = tolerances ?? STEPTolerances(chord: chordTolerance)
         angleScale = angleScaleToRadians
     }
 
@@ -231,7 +232,7 @@ final class STEPCurveResolver {
               let vectorParameters = try? file.parameters(parameters.reference(at: 2), type: "VECTOR"),
               let axis = try? direction(vectorParameters.reference(at: 1)) else { return }
         let length = simd_distance(points.start, points.end)
-        let tolerance = max(Self.relativeVertexTolerance * length, min(chordTolerance, 1e-2 * length), 1e-7)
+        let tolerance = tolerances.vertexOnCurve(extent: length)
         for (isStart, vertexID, point) in [(true, vertexIDs.start, points.start), (false, vertexIDs.end, points.end)] {
             let offset = simd_length(simd_cross(point - origin, axis))
             guard offset <= tolerance else {
@@ -297,9 +298,6 @@ final class STEPCurveResolver {
         let to: Double
     }
 
-    /// Relative vertex tolerance for curves that carry no natural scale of their own.
-    private static let relativeVertexTolerance = 1e-4
-
     private func boundedTolerance(_ points: [SIMD3<Double>]) -> Double {
         var low = points[0]
         var high = points[0]
@@ -310,11 +308,9 @@ final class STEPCurveResolver {
         var magnitude = 0.0
         for axis in 0..<3 { magnitude = max(magnitude, abs(low[axis]), abs(high[axis])) }
         // CAD exports often place a vertex a few thousandths of a millimetre off a freeform curve
-        // (the file's own accuracy is typically 0.01 mm), so the floor follows the chord tolerance,
-        // but never more than 1% of the curve's extent, so a short curve is not swallowed by it.
-        let extent = simd_length(high - low)
-        return max(Self.relativeVertexTolerance * extent, min(chordTolerance, 1e-2 * extent),
-                   1e-9 * (1 + magnitude), 1e-7)
+        // (the file's own accuracy is typically 0.01 mm), so the floor follows the chord tolerance
+        // and the accuracy the file declares; see `STEPTolerances.vertexOnCurve`.
+        return tolerances.vertexOnCurve(extent: simd_length(high - low), magnitude: magnitude)
     }
 
     /// Splits the edge into directed runs of the curve's parameter domain.
@@ -732,14 +728,14 @@ final class STEPCurveResolver {
         let second = try angle(of: trim.second, master: trim.master, conic: conic, tolerance: tolerance)
         if let p1 = trim.first.parameter, let p2 = trim.second.parameter, let unit = try optionalAngleScale() {
             let span = abs(p2 - p1) * unit
-            if abs(span - STEPAngle.twoPi) <= Self.angularTolerance { return .full }
-            if span > STEPAngle.twoPi + Self.angularTolerance {
+            if abs(span - STEPAngle.twoPi) <= tolerances.angular { return .full }
+            if span > STEPAngle.twoPi + tolerances.angular {
                 throw STEP.ParseError("Trimmed \(conic.noun) spans more than one revolution")
             }
         }
         // sense_agreement FALSE runs trim_1 → trim_2 against the basis direction.
         let sweep = trim.senseAgreement ? STEPAngle.wrapped(second - first) : STEPAngle.wrapped(first - second)
-        if sweep <= Self.angularTolerance || sweep >= STEPAngle.twoPi - Self.angularTolerance { return .unknown }
+        if sweep <= tolerances.angular || sweep >= STEPAngle.twoPi - tolerances.angular { return .unknown }
         return .partial(start: trim.senseAgreement ? first : second, sweep: sweep)
     }
 
@@ -782,8 +778,8 @@ final class STEPCurveResolver {
         guard magnitude > 1e-9 else { throw STEP.ParseError("Degenerate \(conic.noun) edge") }
         if let arc {
             guard case .partial(let trimStart, let trimSweep) = arc,
-                  STEPAngle.distance(forward ? a.angle : b.angle, trimStart) <= Self.angularTolerance,
-                  abs(magnitude - trimSweep) <= Self.angularTolerance else {
+                  STEPAngle.distance(forward ? a.angle : b.angle, trimStart) <= tolerances.angular,
+                  abs(magnitude - trimSweep) <= tolerances.angular else {
                 throw STEP.ParseError("Edge vertices disagree with the trimmed curve")
             }
         }

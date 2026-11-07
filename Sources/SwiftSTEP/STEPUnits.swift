@@ -38,6 +38,31 @@ struct STEPUnits {
         try scale(contextID: contextID, kind: .angle)
     }
 
+    /// The distance accuracy the context declares (`DISTANCE_ACCURACY_VALUE` in a
+    /// `GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT`), in millimetres, or `nil` when it declares none.
+    /// Without that name, the first length uncertainty is used.
+    func uncertaintyMM(contextID: Int) throws -> Double? {
+        guard let assigned = try file.components(contextID).first(where: { $0.type == "GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT" }) else {
+            return nil
+        }
+        var fallback: Double?
+        for id in try assigned.parameters.references(at: 0) {
+            guard let measure = try file.components(id).first(where: { $0.type == "UNCERTAINTY_MEASURE_WITH_UNIT" }) else { continue }
+            let parameters = measure.parameters
+            guard let value = try parameters.argument(0).number, value.isFinite, value > 0 else { continue }
+            let unit = try parameters.reference(at: 1)
+            // An angle or other uncertainty is not a distance.
+            guard file.hasType(unit, Kind.length.unitType) else { continue }
+            let millimetres = try value * scale(unit, kind: .length, visited: [])
+            guard millimetres.isFinite, millimetres > 0 else { continue }
+            if parameters.count > 2, case .string(let name) = parameters[2], name == "DISTANCE_ACCURACY_VALUE" {
+                return millimetres
+            }
+            fallback = fallback ?? millimetres
+        }
+        return fallback
+    }
+
     private func scale(contextID: Int, kind: Kind) throws -> Double {
         let parameters = try file.parameters(contextID, type: "GLOBAL_UNIT_ASSIGNED_CONTEXT")
         let units = try parameters.references(at: 0)

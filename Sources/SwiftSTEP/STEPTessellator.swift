@@ -26,29 +26,30 @@ final class STEPTessellator {
     private let file: STEPFile
     private let model: STEP.EdgeModel
     private let tolerance: Double
+    /// Rebuilt for each body from the accuracy its context declares.
+    private var tolerances: STEPTolerances
     private var surfaces: STEP.SurfaceModel
     private var triangleBudget = STEPTessellator.maximumTriangles
 
     private static let bodyTypes: Set<String> = ["MANIFOLD_SOLID_BREP", "BREP_WITH_VOIDS", "SHELL_BASED_SURFACE_MODEL"]
     private static let surfaceTypes: Set<String> = ["PLANE", "CYLINDRICAL_SURFACE", "CONICAL_SURFACE",
                                                     "SPHERICAL_SURFACE", "TOROIDAL_SURFACE"]
-    /// Two boundary edges meet when their end points are this close (mm).
-    private static let connectionTolerance = 1e-6
-
     init(file: STEPFile, model: STEP.EdgeModel, options: STEP.Options) {
         self.file = file
         self.model = model
         tolerance = options.chordToleranceMM
+        tolerances = STEPTolerances(chord: options.chordToleranceMM)
         surfaces = STEP.SurfaceModel(origin: model.bounds?.workpieceOrigin ?? .zero)
     }
 
     func tessellate() throws -> STEP.SurfaceModel {
         try Task.checkCancellation()
         guard tolerance.isFinite, tolerance > 0 else {
-            throw STEP.ParseError("Chord tolerance must be finite and positive")
+            throw STEP.ParseError("Chord tolerance must be finite and positive", kind: .invalidOptions)
         }
         if model.bodies.isEmpty {
-            diagnose(nil, "No bodies to tessellate: the edge pass found no supported solid or shell (see the edge notes)")
+            diagnose(nil, "No bodies to tessellate: the edge pass found no supported solid or shell (see the edge notes)",
+                     .warning, code: "no-bodies")
         }
         let edgesByBody = Dictionary(grouping: model.edges, by: { $0.id.bodyID })
         for body in model.bodies {
@@ -58,13 +59,14 @@ final class STEPTessellator {
         return surfaces
     }
 
-    private func diagnose(_ id: Int?, _ message: String) {
-        surfaces.diagnostics.append(STEP.Diagnostic(entityID: id, message: message))
+    private func diagnose(_ id: Int?, _ message: String, _ severity: STEP.Diagnostic.Severity, code: String) {
+        surfaces.diagnostics.append(STEP.Diagnostic(entityID: id, message: message, severity: severity, code: code))
     }
 
     // MARK: Bodies
 
     private func tessellate(body: STEP.BodyInfo, edges: [STEP.Edge]) throws {
+        tolerances = STEPTolerances(chord: tolerance, declaredUncertainty: body.uncertaintyMM)
         let faces: [(id: Int, flipped: Bool)]
         do {
             faces = try collectFaces(bodyID: body.id.entityID)
@@ -72,12 +74,14 @@ final class STEPTessellator {
             surfaces.unsurfacedBodies.append(body.id)
             surfaces.faceFailures.append(STEP.FaceFailure(bodyID: body.id, faceID: nil, surfaceID: nil,
                                                           surfaceType: nil, reason: error.description))
-            diagnose(body.id.entityID, "No surface for body #\(body.id.entityID): \(error.description)")
+            diagnose(body.id.entityID, "No surface for body #\(body.id.entityID): \(error.description)",
+                     .skipped, code: "body-unsurfaced")
             return
         }
         surfaces.reachableFaceCount += faces.count
         if faces.isEmpty {
-            diagnose(body.id.entityID, "Body #\(body.id.entityID) has no faces, so there is nothing to fill")
+            diagnose(body.id.entityID, "Body #\(body.id.entityID) has no faces, so there is nothing to fill",
+                     .warning, code: "no-faces")
             return
         }
         let edgeByID = Dictionary(edges.map { ($0.id.entityID, $0) }, uniquingKeysWith: { first, _ in first })
@@ -120,7 +124,7 @@ final class STEPTessellator {
                 surfaces.faceFailures.append(STEP.FaceFailure(bodyID: body.id, faceID: face.id, surfaceID: surfaceID,
                                                               surfaceType: type, reason: reason))
                 let on = type.map { " on \($0)" + (surfaceID.map { " #\($0)" } ?? "") } ?? ""
-                diagnose(face.id, "Face #\(face.id)\(on) not tessellated: \(reason)")
+                diagnose(face.id, "Face #\(face.id)\(on) not tessellated: \(reason)", .skipped, code: "face-failed")
             }
         }
 
@@ -128,12 +132,14 @@ final class STEPTessellator {
             surfaces.failedFaceCount += failed
             surfaces.unsurfacedBodies.append(body.id)
             diagnose(body.id.entityID,
-                     "No filled faces for body #\(body.id.entityID): \(failed) of \(faces.count) faces could not be tessellated, so the whole body is left unfilled (edges are still drawn)")
+                     "No filled faces for body #\(body.id.entityID): \(failed) of \(faces.count) faces could not be tessellated, so the whole body is left unfilled (edges are still drawn)",
+                     .skipped, code: "body-unfilled")
         } else if mesh.triangleCount > 0 {
             surfaces.tessellatedFaceCount += faces.count
             surfaces.bodies.append(mesh)
         } else {
-            diagnose(body.id.entityID, "Body #\(body.id.entityID): all \(faces.count) faces tessellated to zero triangles")
+            diagnose(body.id.entityID, "Body #\(body.id.entityID): all \(faces.count) faces tessellated to zero triangles",
+                     .warning, code: "zero-triangles")
         }
     }
 
@@ -237,7 +243,7 @@ final class STEPTessellator {
         let p = part.parameters
         // Only the frame helper is used: the resolver scales the placement's origin.
         let resolver = STEPCurveResolver(file: file, scaleToMM: scale, chordTolerance: tolerance,
-                                         angleScaleToRadians: { 1 })
+                                         tolerances: tolerances, angleScaleToRadians: { 1 })
         let frame = try resolver.frame(try p.reference(at: 1))
 
         func length(_ index: Int, allowZero: Bool = false) throws -> Double {
@@ -406,7 +412,7 @@ final class STEPTessellator {
             let piece = orientation == "T" ? edge.points : Array(edge.points.reversed())
             guard let first = piece.first else { continue }
             if let last = points.last {
-                guard simd_distance(last, first) <= Self.connectionTolerance else {
+                guard simd_distance(last, first) <= tolerances.connection else {
                     throw STEP.ParseError("Face loop is not connected at edge #\(edgeID)")
                 }
                 for point in piece.dropFirst() {
@@ -416,7 +422,7 @@ final class STEPTessellator {
                 points = piece
             }
         }
-        guard points.count >= 2, simd_distance(points[0], points[points.count - 1]) <= Self.connectionTolerance else {
+        guard points.count >= 2, simd_distance(points[0], points[points.count - 1]) <= tolerances.connection else {
             throw STEP.ParseError("Face loop is not closed")
         }
         points.removeLast()
@@ -435,14 +441,14 @@ final class STEPTessellator {
         var tips: [SIMD3<Double>] = []
         stack.reserveCapacity(input.count)
         for point in input {
-            if stack.count >= 2, simd_distance(stack[stack.count - 2], point) <= connectionTolerance {
+            if stack.count >= 2, simd_distance(stack[stack.count - 2], point) <= STEPTolerances.retrace {
                 tips.append(stack.removeLast())
                 continue
             }
             stack.append(point)
         }
         // The loop is cyclic: a spike can straddle its first point.
-        while stack.count >= 4, simd_distance(stack[stack.count - 1], stack[1]) <= connectionTolerance {
+        while stack.count >= 4, simd_distance(stack[stack.count - 1], stack[1]) <= STEPTolerances.retrace {
             tips.append(stack.removeFirst())
             stack.removeLast()
         }

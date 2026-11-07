@@ -35,7 +35,11 @@ Call the synchronous forms from a background task, never the main actor.
 
 | Type | Contents |
 | --- | --- |
-| `STEP.EdgeModel` | `importID`, `edges`, `bodies`, `bounds`, `diagnostics`, `indexedEntityCount`, `reachableEdgeCount`, `skippedEdgeCount` |
+| `STEP.EdgeModel` | `importID`, `header`, `edges`, `bodies`, `bounds`, `diagnostics`, `indexedEntityCount`, `reachableEdgeCount`, `skippedEdgeCount` |
+| `STEP.Header` | From the file's header: `schemas`, `descriptions`, `implementationLevel`, `name`, `timestamp`, `authors`, `organizations`, `preprocessorVersion`, `originatingSystem`, `authorization` |
+| `STEP.Diagnostic` | `entityID`, `message`, `severity` (`info`, `warning`, `skipped`), `code` (stable short id such as `unsupported-curve`, `vertex-off-curve`, `chord-cap`) |
+| `STEP.ParseError` | `description` and `kind`: `.notSTEP`, `.truncated`, `.malformed`, `.assembly`, `.unresolvedUnits(contextID:)`, `.limitExceeded`, `.invalidOptions` |
+| `STEP.Options` | `assumedUnitScaleToMM`, `chordToleranceMM`, `maximumEntityCount`. When a file declares its distance accuracy, boundary edges that meet within it (capped at the chord tolerance) close a face loop |
 | `STEP.Edge` | `id`, `kind`, `points: [SIMD3<Double>]` (mm, source coordinates), `startVertexID`, `endVertexID`, `adjacentFaceIDs`, `chordError` |
 | `STEP.EdgeID` / `STEP.BodyID` | Stable identity for one import: `importID` + body (representation and body entity IDs) + `EDGE_CURVE` entity ID |
 | `STEP.Bounds` | `min`, `max`, `size`, `workpieceOrigin` (min X, min Y, max Z) as `SIMD3<Double>` |

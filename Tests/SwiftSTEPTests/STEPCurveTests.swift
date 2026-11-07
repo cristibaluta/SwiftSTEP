@@ -19,10 +19,13 @@ private final class StepBuilder {
     private var next = 1
     private let lengthUnit: LengthUnit
     private let angleUnit: AngleUnit
+    /// Declared DISTANCE_ACCURACY_VALUE, in the file's length unit.
+    private let uncertainty: Double?
 
-    init(length: LengthUnit = .millimetre, angle: AngleUnit = .radian) {
+    init(length: LengthUnit = .millimetre, angle: AngleUnit = .radian, uncertainty: Double? = nil) {
         lengthUnit = length
         angleUnit = angle
+        self.uncertainty = uncertainty
     }
 
     /// Part 21 reals need a decimal point; %E always gives one.
@@ -140,7 +143,12 @@ private final class StepBuilder {
             case .none: break
         }
         let list = units.map { "#\($0)" }.joined(separator: ",")
-        return add("( GEOMETRIC_REPRESENTATION_CONTEXT(3) GLOBAL_UNIT_ASSIGNED_CONTEXT((\(list))) REPRESENTATION_CONTEXT('ctx','3D') )")
+        var uncertaintyPart = ""
+        if let uncertainty {
+            let measure = add("UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(\(Self.real(uncertainty))),#\(units[0]),'DISTANCE_ACCURACY_VALUE','')")
+            uncertaintyPart = "GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((#\(measure))) "
+        }
+        return add("( GEOMETRIC_REPRESENTATION_CONTEXT(3) \(uncertaintyPart)GLOBAL_UNIT_ASSIGNED_CONTEXT((\(list))) REPRESENTATION_CONTEXT('ctx','3D') )")
     }
 }
 
@@ -954,5 +962,160 @@ struct STEPHardeningTests {
         let mesh = STEP.FaceMesh(faceID: 6, surface: .plane(frame), sameSense: true, triangles: 0..<2)
         #expect(mesh.triangles.count == 2)
         #expect(STEP.Diagnostic(entityID: 1, message: "a") == STEP.Diagnostic(entityID: 1, message: "a"))
+    }
+}
+
+@Suite("STEP errors, diagnostics and tolerances")
+struct STEPPhase1Tests {
+    private func lineFile(builder: StepBuilder = StepBuilder(), from start: SIMD3<Double> = .zero) -> Data {
+        singleEdge(builder, start: start, end: SIMD3(10, 0, 0)) { $0.line(from: .zero, direction: SIMD3(1, 0, 0)) }
+    }
+
+    private func text(_ data: Data) -> String { String(decoding: data, as: UTF8.self) }
+
+    private func kind(of data: Data, _ options: STEP.Options = STEP.Options()) -> STEP.ParseError.Kind? {
+        do {
+            _ = try parse(data, options)
+            return nil
+        } catch let error as STEP.ParseError {
+            return error.kind
+        } catch {
+            return nil
+        }
+    }
+
+    // MARK: T10
+
+    @Test func fileLevelErrorsCarryAKind() {
+        #expect(kind(of: Data("hello".utf8)) == .notSTEP)
+        #expect(kind(of: Data()) == .notSTEP)
+
+        let cut = text(lineFile()).components(separatedBy: "\nENDSEC;\nEND-ISO")[0]
+        #expect(kind(of: Data(cut.utf8)) == .truncated)
+
+        let assembly = text(lineFile())
+            .replacingOccurrences(of: "\nENDSEC;\nEND-ISO", with: "\n#9999=MAPPED_ITEM('',#1,#1);\nENDSEC;\nEND-ISO")
+        #expect(kind(of: Data(assembly.utf8)) == .assembly)
+
+        #expect(kind(of: lineFile(), STEP.Options(chordToleranceMM: -1)) == .invalidOptions)
+        #expect(kind(of: lineFile(), STEP.Options(maximumEntityCount: 3)) == .limitExceeded)
+    }
+
+    @Test func unresolvedUnitsCanBeToldApartWithoutMatchingText() {
+        let broken = text(lineFile()).replacingOccurrences(of: "SI_UNIT(.MILLI.,.METRE.)", with: "SI_UNIT(.MILLI.,.FOOT.)")
+        guard case .unresolvedUnits(let contextID)? = kind(of: Data(broken.utf8)) else {
+            Issue.record("expected .unresolvedUnits")
+            return
+        }
+        #expect(contextID > 0)
+        // With an explicit scale the same file imports, and says so.
+        let assumed = try? parse(Data(broken.utf8), STEP.Options(assumedUnitScaleToMM: 1))
+        #expect(assumed?.edges.count == 1)
+        #expect(assumed?.diagnostics.contains { $0.code == "assumed-units" } == true)
+    }
+
+    @Test func descriptionIsKept() {
+        do {
+            _ = try parse(Data("hello".utf8))
+            Issue.record("expected an error")
+        } catch let error as STEP.ParseError {
+            #expect(!error.description.isEmpty)
+        } catch {
+            Issue.record("wrong error type")
+        }
+    }
+
+    // MARK: T11
+
+    @Test func diagnosticsCarrySeverityAndCode() throws {
+        let off = try parse(lineFile(from: SIMD3(0, 3, 0)))
+        let note = try #require(off.diagnostics.first { $0.code == "vertex-off-curve" })
+        #expect(note.severity == .skipped)
+        #expect(off.diagnostics.allSatisfy { !$0.code.isEmpty && $0.code != "unspecified" })
+
+        let unsupported = try parse(singleEdge(start: .zero, end: SIMD3(10, 0, 0)) {
+            $0.add("PARABOLA('',#\($0.placement(origin: .zero)),1.0E+00)")
+        })
+        #expect(unsupported.diagnostics.contains { $0.code == "unsupported-curve" && $0.severity == .skipped })
+    }
+
+    // MARK: T12
+
+    @Test func declaredUncertaintyIsScaledToMillimetres() throws {
+        let inches = try parse(lineFile(builder: StepBuilder(length: .inch, uncertainty: 0.001)))
+        let body = try #require(inches.bodies.first)
+        #expect(abs(try #require(body.uncertaintyMM) - 0.0254) < 1e-12)
+
+        let millimetres = try parse(lineFile(builder: StepBuilder(uncertainty: 0.01)))
+        #expect(abs(try #require(millimetres.bodies.first?.uncertaintyMM) - 0.01) < 1e-12)
+
+        // Nothing declared: the defaults apply.
+        #expect(try parse(lineFile()).bodies.first?.uncertaintyMM == nil)
+    }
+
+    // MARK: T13
+
+    private func squareWithMicronGap(uncertainty: Double?) -> Data {
+        let b = StepBuilder(uncertainty: uncertainty)
+        let a = b.vertex(SIMD3(0, 0, 0))
+        let bottomRight = b.vertex(SIMD3(10, 0, 0))
+        let c = b.vertex(SIMD3(10, 10, 0))
+        let d = b.vertex(SIMD3(0, 10, 0))
+        // A second vertex 3 microns from d: the last edge starts there.
+        let dAgain = b.vertex(SIMD3(0, 10.003, 0))
+        let e1 = b.edge(start: a, end: bottomRight, curve: b.line(from: SIMD3(0, 0, 0), direction: SIMD3(1, 0, 0)))
+        let e2 = b.edge(start: bottomRight, end: c, curve: b.line(from: SIMD3(10, 0, 0), direction: SIMD3(0, 1, 0)))
+        let e3 = b.edge(start: c, end: d, curve: b.line(from: SIMD3(10, 10, 0), direction: SIMD3(-1, 0, 0)))
+        let e4 = b.edge(start: dAgain, end: a, curve: b.line(from: SIMD3(0, 10.003, 0), direction: SIMD3(0, -1, 0)))
+        return b.data(loops: [[StepBuilder.fwd(e1), StepBuilder.fwd(e2), StepBuilder.fwd(e3), StepBuilder.fwd(e4)]])
+    }
+
+    @Test func verticesAFewMicronsApartCloseALoopWhenTheFileSaysSo() throws {
+        let declared = try STEP.readGeometry(data: squareWithMicronGap(uncertainty: 0.01))
+        #expect(declared.surfaces.tessellatedFaceCount == 1)
+        #expect(declared.surfaces.triangleCount >= 2)
+
+        // The default 1e-6 mm still refuses the same gap: nothing changes without a declaration.
+        let undeclared = try STEP.readGeometry(data: squareWithMicronGap(uncertainty: nil))
+        #expect(undeclared.surfaces.tessellatedFaceCount == 0)
+        #expect(undeclared.surfaces.failedFaceCount == 1)
+    }
+
+    @Test func tolerancesDeriveFromOnePlace() {
+        let none = STEPTolerances(chord: 0.01)
+        #expect(none.connection == STEPTolerances.defaultConnection)
+        #expect(none.vertexFloor == 0.01)
+        let declared = STEPTolerances(chord: 0.01, declaredUncertainty: 0.005)
+        #expect(declared.connection == 0.005)
+        // Coarser than the sampling can resolve: capped at the chord tolerance.
+        #expect(STEPTolerances(chord: 0.01, declaredUncertainty: 1).connection == 0.01)
+        // A nonsense declaration is ignored.
+        #expect(STEPTolerances(chord: 0.01, declaredUncertainty: -1) == none)
+        // A short curve is not swallowed by the floor.
+        #expect(none.vertexOnCurve(extent: 0.1) <= 1e-3 + 1e-12)
+    }
+
+    // MARK: T14
+
+    @Test func headerComesBackInTheModel() throws {
+        let header = try parse(lineFile()).header
+        #expect(header.name == "t.step")
+        #expect(header.schemas == ["AUTOMOTIVE_DESIGN"])
+        #expect(header.timestamp == "2026-01-01T00:00:00")
+        #expect(header.descriptions == ["curve test"])
+        #expect(header.implementationLevel == "2;1")
+        #expect(header.originatingSystem == nil)
+    }
+
+    @Test func headerFieldsAreFilledWhenPresent() throws {
+        let named = text(lineFile()).replacingOccurrences(
+            of: "FILE_NAME('t.step','2026-01-01T00:00:00',(''),(''),'','','');",
+            with: "FILE_NAME('part.stp','2026-02-03T04:05:06',('Ana'),('Acme'),'preproc 1.0','SomeCAD 2026','auth');")
+        let header = try parse(Data(named.utf8)).header
+        #expect(header.name == "part.stp")
+        #expect(header.authors == ["Ana"] && header.organizations == ["Acme"])
+        #expect(header.preprocessorVersion == "preproc 1.0")
+        #expect(header.originatingSystem == "SomeCAD 2026")
+        #expect(header.authorization == "auth")
     }
 }

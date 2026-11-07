@@ -12,48 +12,55 @@ Each task is small and self-contained, so it can be done in one short session.
 
 ## Phase 0: quick wins (all S)
 
-### T01. Remove `indirect` from `STEPValue`
+### T01. Remove `indirect` from `STEPValue` — DONE
 - Files: `STEPValue.swift`
 - Why: `indirect enum` boxes every case, including `.integer` and `.real`. `[STEPValue]` is already heap-backed.
 - Do: delete the `indirect` keyword and build.
 - Done when: it compiles, existing tests pass, memory use on a large file drops.
+- Status: done. `indirect` removed. Not built or run (no Swift toolchain here): run `swift test`.
 
-### T02. Fix operator precedence in `STEPUnits.scale`
+### T02. Fix operator precedence in `STEPUnits.scale` — DONE
 - Files: `STEPUnits.swift`
 - Why: `A || B && count == 2` skips the count check for `MEASURE_WITH_UNIT`. The angle version has parentheses.
 - Do: add the parentheses. Better, merge `scale` and `angleScale` into one function parameterised by unit type and base unit.
 - Done when: the unit tests still pass and the two paths share one implementation.
+- Status: done. `scale`/`angleScale` merged into one `Kind`-driven function; parentheses bug gone. Phase 0 tests: unit tests unchanged. Not built or run (no Swift toolchain here): run `swift test`.
 
-### T03. Skip a UTF-8 BOM at the start of the file
+### T03. Skip a UTF-8 BOM at the start of the file — DONE
 - Files: `STEPTokenizer.swift` (or `STEPFile.init`)
 - Do: if the first three bytes are `EF BB BF`, start after them.
 - Done when: a test with a BOM-prefixed fixture parses.
+- Status: done. Test `byteOrderMarkIsSkipped`. Not built or run (no Swift toolchain here): run `swift test`.
 
-### T04. Tolerate user-defined keywords (`!NAME(...)`)
+### T04. Tolerate user-defined keywords (`!NAME(...)`) — DONE
 - Files: `STEPTokenizer.swift`, `STEPFile.swift`
 - Do: lex `!` followed by letters as a `.word`. Index it like any other entity. It is ignored by the extractor.
 - Done when: a fixture containing `#9=!MY_ENTITY('x');` imports without throwing.
+- Status: done. Test `userDefinedKeywordsAreIndexedAndIgnored`. Not built or run (no Swift toolchain here): run `swift test`.
 
-### T05. Add the missing `LINE` vertex check
+### T05. Add the missing `LINE` vertex check — DONE
 - Files: `STEPCurves.swift`
 - Do: measure the distance from both vertices to the line. If it is above tolerance, throw the same kind of "vertex not on curve" error the other curves use.
 - Done when: a test with an off-line vertex is skipped with a diagnostic.
+- Status: done. Test `vertexOffItsLineIsSkippedWithADiagnostic` (message "not on its line"). Not built or run (no Swift toolchain here): run `swift test`.
 
-### T06. Make the entity cap an option
+### T06. Make the entity cap an option — DONE
 - Files: `Model.swift` (`Options`), `STEPFile.swift`, `STEP.swift`
 - Do: add `maximumEntityCount` (default 2,000,000) to `STEP.Options` and pass it to `STEPFile`.
 - Done when: a test lowering the cap hits the error and the default behaviour is unchanged.
+- Status: done. `Options.maximumEntityCount`; test `entityCapIsAnOption`. Not built or run (no Swift toolchain here): run `swift test`.
 
-### T07. Public initializers and conformances
+### T07. Public initializers and conformances — DONE
 - Files: `Model.swift`, `Mesh.swift`, `Surface.swift`
 - Do: add public inits for `Edge`, `BodyInfo`, `Diagnostic`, `Frame`, `FaceMesh`. Make `Edge` `Identifiable`. Make `chordError` a `let`. Make `Diagnostic` `Equatable` and `CustomStringConvertible`.
 - Done when: an external target can construct these types in a test.
+- Status: done. Public inits, `Edge: Identifiable`, `chordError` is a `let`, `Diagnostic: Equatable`; test `publicTypesCanBeConstructedAndCompared`. Not built or run (no Swift toolchain here): run `swift test`.
 
 ---
 
 ## Phase 1: errors, diagnostics and tolerances
 
-### T10. Typed `ParseError` (M)
+### T10. Typed `ParseError` (M) — DONE
 - Files: `Model.swift`, then each `throw STEP.ParseError("...")` site
 - Do:
   1. Add `enum Kind` with `.notSTEP`, `.truncated`, `.malformed`, `.assembly`, `.unresolvedUnits(contextID: Int)`, `.limitExceeded`, `.invalidOptions`.
@@ -61,29 +68,34 @@ Each task is small and self-contained, so it can be done in one short session.
   3. Convert only the file-level throws in `STEPFile` and `STEPEdgeExtractor.extract` first.
   4. Leave per-edge and per-face errors as `.malformed` for now.
 - Done when: a test can branch on `.unresolvedUnits` without matching text.
+- Status: done. `ParseError.Kind` with all seven cases. Converted: `STEPFile`, `STEPTokenizer`, `STEPEdgeExtractor.extract`, tessellator options check. Tests: `fileLevelErrorsCarryAKind`, `unresolvedUnitsCanBeToldApartWithoutMatchingText`. Not built or run (no Swift toolchain here): run `swift test`.
 
-### T11. `Diagnostic` severity and code (S)
+### T11. `Diagnostic` severity and code (S) — DONE
 - Files: `Model.swift`, `diagnose` calls in `STEPEdgeExtractor.swift` and `STEPTessellator.swift`
 - Do: add `severity` (`info`, `warning`, `skipped`) and a short `code` string (`"unsupported-curve"`, `"chord-cap"`, …) to `Diagnostic`.
 - Done when: existing diagnostics carry a code and the tests still pass.
+- Status: done. `Diagnostic.severity` (`info`/`warning`/`skipped`) and `code`. Codes: `assumed-units`, `topology-cycle`, `unsupported-topology`, `unsupported-curve`, `vertex-off-curve`, `edge-skipped`, `chord-cap`, `no-bodies`, `no-edges`, `body-unsurfaced`, `no-faces`, `face-failed`, `body-unfilled`, `zero-triangles`, `surfaces-unavailable`. Test: `diagnosticsCarrySeverityAndCode`. Not built or run (no Swift toolchain here): run `swift test`.
 
-### T12. Read the file's uncertainty (M)
+### T12. Read the file's uncertainty (M) — DONE
 - Files: `STEPUnits.swift`, new `STEPTolerances.swift`
 - Do:
   1. Read `GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT` and `UNCERTAINTY_MEASURE_WITH_UNIT` and scale to mm.
   2. Expose it from `STEPUnits`.
   3. Fall back to today's defaults when it is absent.
 - Done when: a test with a declared uncertainty returns the scaled value.
+- Status: done. `STEPUnits.uncertaintyMM(contextID:)`, new `STEPTolerances.swift`, `BodyInfo.uncertaintyMM`. Test: `declaredUncertaintyIsScaledToMillimetres`. Not built or run (no Swift toolchain here): run `swift test`.
 
-### T13. Replace scattered tolerance constants (M, after T12)
+### T13. Replace scattered tolerance constants (M, after T12) — DONE
 - Files: `STEPCurves.swift`, `STEPTessellator.swift`
 - Do: replace `connectionTolerance (1e-6)`, `relativeVertexTolerance (1e-4)` and `angularTolerance (1e-3)` with values derived from one `Tolerances` struct.
 - Done when: all current tests pass unchanged, and a new test shows two vertices a few microns apart still close a loop.
+- Status: done. `STEPTolerances` replaces `connectionTolerance`, `relativeVertexTolerance`, `angularTolerance`. The connection tolerance follows the declared accuracy (capped at the chord tolerance); without one it stays 1e-6. Tests: `verticesAFewMicronsApartCloseALoopWhenTheFileSaysSo`, `tolerancesDeriveFromOnePlace`. Not built or run (no Swift toolchain here): run `swift test`.
 
-### T14. Header metadata (S)
+### T14. Header metadata (S) — DONE
 - Files: `STEPFile.swift`, `Model.swift`, `STEPEdgeImporter.swift`
 - Do: keep the header records. Parse `FILE_SCHEMA` and `FILE_NAME` into `STEP.Header` (schema, name, originating system, timestamp). Add `header` to `EdgeModel`.
 - Done when: a fixture's schema and file name come back in the model.
+- Status: done. `STEP.Header` on `EdgeModel.header`. Tests: `headerComesBackInTheModel`, `headerFieldsAreFilledWhenPresent`. Not built or run (no Swift toolchain here): run `swift test`.
 
 ---
 

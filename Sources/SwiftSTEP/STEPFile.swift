@@ -8,6 +8,8 @@ final class STEPFile {
     }
     let data: Data
     private(set) var index: [Int: [ComponentRange]] = [:]
+    /// Parameter lists of the HEADER records, by keyword (the first of each), parsed on demand.
+    private var headerRanges: [String: Range<Int>] = [:]
     private var cache: [Int: [STEPComponent]] = [:]
 
     init(data: Data, maximumEntityCount: Int = 2_000_000) throws {
@@ -16,15 +18,22 @@ final class STEPFile {
         let bom: [UInt8] = [0xEF, 0xBB, 0xBF]
         let start = data.starts(with: bom) ? data.startIndex + bom.count : data.startIndex
         var lexer = STEPTokenizer(data: data, range: start..<data.endIndex)
-        try lexer.expect(.word("ISO-10303-21"))
+        do {
+            try lexer.expect(.word("ISO-10303-21"))
+        } catch let error as STEP.ParseError {
+            throw STEP.ParseError("Not a STEP (ISO 10303-21) file: \(error.description)", kind: .notSTEP)
+        }
         try lexer.expect(.symbol(59))
         try lexer.expect(.word("HEADER"))
         try lexer.expect(.symbol(59))
         while true {
             let token = try lexer.next()
             if token == .word("ENDSEC") { break }
-            guard case .word = token else { throw STEP.ParseError("Invalid HEADER record") }
-            _ = try Self.componentRange(in: &lexer)
+            guard case .word(let name) = token else {
+                throw STEP.ParseError("Invalid HEADER record", kind: token == .end ? .truncated : .malformed)
+            }
+            let range = try Self.componentRange(in: &lexer)
+            if headerRanges[name] == nil { headerRanges[name] = range }
             try lexer.expect(.symbol(59))
         }
         try lexer.expect(.symbol(59))
@@ -34,9 +43,13 @@ final class STEPFile {
         while true {
             let token = try lexer.next()
             if token == .word("ENDSEC") { break }
-            guard case .reference(let id) = token else { throw STEP.ParseError("Expected entity record") }
+            guard case .reference(let id) = token else {
+                throw STEP.ParseError("Expected entity record", kind: token == .end ? .truncated : .malformed)
+            }
             guard index[id] == nil else { throw STEP.ParseError("Duplicate entity #\(id)") }
-            guard index.count < maximumEntityCount else { throw STEP.ParseError("Entity count limit exceeded") }
+            guard index.count < maximumEntityCount else {
+                throw STEP.ParseError("Entity count limit exceeded", kind: .limitExceeded)
+            }
             try lexer.expect(.symbol(61))
             let first = try lexer.next()
             var components: [ComponentRange] = []
@@ -50,7 +63,9 @@ final class STEPFile {
                         throw STEP.ParseError("Invalid complex entity #\(id)")
                     }
                     components.append(ComponentRange(type: type, range: try Self.componentRange(in: &lexer)))
-                    guard components.count <= 128 else { throw STEP.ParseError("Too many complex components") }
+                    guard components.count <= 128 else {
+                        throw STEP.ParseError("Too many complex components", kind: .limitExceeded)
+                    }
                 }
                 guard !components.isEmpty else { throw STEP.ParseError("Empty complex entity #\(id)") }
             } else { throw STEP.ParseError("Missing type for #\(id)") }
@@ -72,12 +87,47 @@ final class STEPFile {
             switch try lexer.next() {
                 case .symbol(40): depth += 1
                 case .symbol(41): depth -= 1
-                case .end, .symbol(59), .symbol(61): throw STEP.ParseError("Unterminated entity parameters")
+                case .end: throw STEP.ParseError("Unterminated entity parameters", kind: .truncated)
+                case .symbol(59), .symbol(61): throw STEP.ParseError("Unterminated entity parameters")
                 default: break
             }
-            guard depth <= STEPTokenizer.maximumNesting else { throw STEP.ParseError("Parameter nesting limit exceeded") }
+            guard depth <= STEPTokenizer.maximumNesting else {
+                throw STEP.ParseError("Parameter nesting limit exceeded", kind: .limitExceeded)
+            }
         }
         return start..<lexer.position
+    }
+
+    /// The HEADER records. Missing or unreadable records leave their fields empty.
+    func header() -> STEP.Header {
+        func values(_ keyword: String) -> [STEPValue] {
+            guard let range = headerRanges[keyword] else { return [] }
+            var parser = STEPParameterParser(lexer: STEPTokenizer(data: data, range: range))
+            guard (try? parser.lexer.expect(.symbol(40))) != nil, let list = try? parser.list(depth: 1) else { return [] }
+            return list
+        }
+        func text(_ value: STEPValue?) -> String? {
+            guard case .string(let string)? = value, !string.isEmpty else { return nil }
+            return string
+        }
+        func texts(_ value: STEPValue?) -> [String] {
+            (value?.list ?? []).compactMap { text($0) }
+        }
+        var header = STEP.Header()
+        let description = values("FILE_DESCRIPTION")
+        header.descriptions = texts(description.first)
+        header.implementationLevel = text(description.count > 1 ? description[1] : nil)
+        let name = values("FILE_NAME")
+        func field(_ index: Int) -> STEPValue? { index < name.count ? name[index] : nil }
+        header.name = text(field(0))
+        header.timestamp = text(field(1))
+        header.authors = texts(field(2))
+        header.organizations = texts(field(3))
+        header.preprocessorVersion = text(field(4))
+        header.originatingSystem = text(field(5))
+        header.authorization = text(field(6))
+        header.schemas = texts(values("FILE_SCHEMA").first)
+        return header
     }
 
     func hasType(_ id: Int, _ type: String) -> Bool {
@@ -115,7 +165,9 @@ private struct STEPParameterParser {
     var lexer: STEPTokenizer
 
     mutating func list(depth: Int) throws -> [STEPValue] {
-        guard depth <= STEPTokenizer.maximumNesting else { throw STEP.ParseError("Parameter nesting limit exceeded") }
+        guard depth <= STEPTokenizer.maximumNesting else {
+            throw STEP.ParseError("Parameter nesting limit exceeded", kind: .limitExceeded)
+        }
         var values: [STEPValue] = []
         var token = try lexer.next()
         if token == .symbol(41) { return values }

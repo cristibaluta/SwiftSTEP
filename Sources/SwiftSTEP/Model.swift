@@ -3,20 +3,58 @@ import simd
 
 extension STEP {
 
-    /// Thrown for problems with the file as a whole. `description` is the message.
+    /// Thrown for problems with the file as a whole. `description` is the message; branch on
+    /// `kind` rather than on its text.
     public struct ParseError: Error, CustomStringConvertible, Sendable {
+        public enum Kind: Sendable, Equatable {
+            /// Not a Part 21 file: the `ISO-10303-21;` header is missing.
+            case notSTEP
+            /// The file ends before its structure does.
+            case truncated
+            /// Anything else wrong with the file's content. Per-edge and per-face errors use this.
+            case malformed
+            /// The file places part instances (assemblies), which are not supported yet.
+            case assembly
+            /// The length unit of a representation context could not be resolved, and
+            /// `Options.assumedUnitScaleToMM` was not set.
+            case unresolvedUnits(contextID: Int)
+            /// A safety cap was hit: entity count, nesting depth, token size.
+            case limitExceeded
+            /// `Options` holds a value that cannot be used.
+            case invalidOptions
+        }
+
+        public let kind: Kind
         public let description: String
-        public init(_ description: String) { self.description = description }
+
+        public init(_ description: String, kind: Kind = .malformed) {
+            self.description = description
+            self.kind = kind
+        }
     }
 
     /// A note about one entity: an unsupported curve, a skipped edge, a sampling cap.
     public struct Diagnostic: Sendable, Equatable, CustomStringConvertible {
+        public enum Severity: Sendable, Equatable {
+            /// Worth knowing, nothing was lost.
+            case info
+            /// The result is usable but approximate or assumed.
+            case warning
+            /// Something was left out: an edge, a face or a whole body.
+            case skipped
+        }
+
         public let entityID: Int?
         public let message: String
+        public let severity: Severity
+        /// Short stable identifier of the kind of note, e.g. `unsupported-curve` or `chord-cap`.
+        public let code: String
 
-        public init(entityID: Int?, message: String) {
+        public init(entityID: Int?, message: String, severity: Severity = .warning, code: String = "unspecified") {
             self.entityID = entityID
             self.message = message
+            self.severity = severity
+            self.code = code
         }
 
         public var description: String { entityID.map { "#\($0): \(message)" } ?? message }
@@ -52,12 +90,16 @@ extension STEP {
         public let contextID: Int
         public let unitScaleToMM: Double
         public let unitsAssumed: Bool
+        /// The distance accuracy the file declares for this body's context, in mm. `nil` when it
+        /// declares none; the importer then uses its own defaults.
+        public let uncertaintyMM: Double?
 
-        public init(id: BodyID, contextID: Int, unitScaleToMM: Double, unitsAssumed: Bool) {
+        public init(id: BodyID, contextID: Int, unitScaleToMM: Double, unitsAssumed: Bool, uncertaintyMM: Double? = nil) {
             self.id = id
             self.contextID = contextID
             self.unitScaleToMM = unitScaleToMM
             self.unitsAssumed = unitsAssumed
+            self.uncertaintyMM = uncertaintyMM
         }
     }
 
@@ -123,9 +165,32 @@ extension STEP {
         public var workpieceOrigin: SIMD3<Double> { SIMD3<Double>(min.x, min.y, max.z) }
     }
 
+    /// The file's `FILE_DESCRIPTION`, `FILE_NAME` and `FILE_SCHEMA` header records. Fields a file
+    /// leaves out, or writes as `$` or `''`, are empty or `nil`.
+    public struct Header: Sendable, Equatable {
+        /// FILE_SCHEMA schema identifiers, e.g. `AUTOMOTIVE_DESIGN { 1 0 10303 214 ... }`.
+        public var schemas: [String] = []
+        /// FILE_DESCRIPTION description lines.
+        public var descriptions: [String] = []
+        public var implementationLevel: String?
+        /// FILE_NAME name, usually the name the exporter gave the file.
+        public var name: String?
+        /// FILE_NAME time stamp, ISO 8601 as written.
+        public var timestamp: String?
+        public var authors: [String] = []
+        public var organizations: [String] = []
+        public var preprocessorVersion: String?
+        /// The CAD system that wrote the file.
+        public var originatingSystem: String?
+        public var authorization: String?
+
+        public init() {}
+    }
+
     /// The stored edges of every supported body.
     public struct EdgeModel: Sendable {
         public let importID: UUID
+        public internal(set) var header = Header()
         /// Deterministic order: by body, then EDGE_CURVE entity ID.
         public internal(set) var edges: [Edge] = []
         public internal(set) var bodies: [BodyInfo] = []
@@ -249,7 +314,7 @@ extension STEP.Geometry {
             return "The face's loop has fewer than three distinct sample points, so it has no area to fill."
         }
         if reason.contains("not connected") || reason.contains("not closed") || reason.contains("degenerate") {
-            return "The face's edges do not form a closed loop within 1e-6 mm: a gap in the file, or an edge that was resampled differently."
+            return "The face's edges do not form a closed loop within the connection tolerance (1e-6 mm, or the file's declared accuracy): a gap in the file, or an edge that was resampled differently."
         }
         if reason.contains("off its") {
             return "The boundary does not lie on the face's surface within the chord tolerance; the file may be damaged or use a loose tolerance."
