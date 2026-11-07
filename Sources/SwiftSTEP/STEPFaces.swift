@@ -103,6 +103,9 @@ final class STEPFaceReader {
         if components.contains(where: { $0.type == "B_SPLINE_SURFACE_WITH_KNOTS" }) {
             return try parseBSplineSurface(id, components: components, scale: scale)
         }
+        if let extrusion = components.first(where: { $0.type == "SURFACE_OF_LINEAR_EXTRUSION" }) {
+            return try parseSurfaceOfLinearExtrusion(id, parameters: extrusion.parameters, scale: scale)
+        }
         if let revolution = components.first(where: { $0.type == "SURFACE_OF_REVOLUTION" }) {
             return try parseSurfaceOfRevolution(id, parameters: revolution.parameters, scale: scale)
         }
@@ -150,6 +153,63 @@ final class STEPFaceReader {
                 guard major > minor else { throw STEP.ParseError("Self-intersecting torus at #\(id) is not supported") }
                 return .torus(frame, major: major, minor: minor)
         }
+    }
+
+    // MARK: Surface of linear extrusion
+
+    /// A B-spline curve pushed along a straight vector, rebuilt exactly as a B-spline surface of
+    /// two rows: u follows the curve and v runs along the extrusion, in millimetres either side of the
+    /// curve. The library finds parameters by projection, so only the geometry has to match.
+    /// Gear flanks and other extruded free-form profiles are written this way.
+    private func parseSurfaceOfLinearExtrusion(_ id: Int, parameters p: [STEPValue], scale: Double) throws -> STEP.Surface {
+        guard let curveID = try p.argument(1).reference, let vectorID = try p.argument(2).reference else {
+            throw STEP.ParseError("Invalid SURFACE_OF_LINEAR_EXTRUSION at #\(id)")
+        }
+        guard (try? file.components(curveID))?.contains(where: { $0.type == "B_SPLINE_CURVE_WITH_KNOTS" }) == true else {
+            let kind = surfaceTypeName(curveID) ?? "curve"
+            throw STEP.ParseError("Unsupported SURFACE_OF_LINEAR_EXTRUSION at #\(id): only B-spline profiles are supported, found \(kind)")
+        }
+        let resolver = STEPCurveResolver(file: file, scaleToMM: scale, chordTolerance: chordTolerance,
+                                         angleScaleToRadians: { 1 })
+        let profile = try resolver.splineGeometry(curveID)
+
+        let vector = try file.parameters(vectorID, type: "VECTOR")
+        guard let directionID = try vector.argument(1).reference else {
+            throw STEP.ParseError("Invalid extrusion vector at #\(vectorID)")
+        }
+        let direction = try file.parameters(directionID, type: "DIRECTION")
+        guard let ratios = try direction.argument(1).list else { throw STEP.ParseError("Invalid extrusion direction at #\(directionID)") }
+        let values = ratios.compactMap { $0.number }
+        guard values.count == 3 else { throw STEP.ParseError("Invalid extrusion direction at #\(directionID)") }
+        let unit = SIMD3(values[0], values[1], values[2])
+        let length = simd_length(unit)
+        guard length.isFinite, length > 0 else { throw STEP.ParseError("Zero-length extrusion direction at #\(directionID)") }
+        // The surface is unbounded along its direction (the vector's magnitude is only a unit of
+        // v); the face's own edges trim it. So the patch is made far longer than any part of the
+        // model it can hold: 100 profile extents either way, and never under a metre.
+        let first = profile.controlPoints[0]
+        let extent = profile.controlPoints.map { simd_length($0 - first) }.max() ?? 0
+        let reach = max(1000, 100 * extent)
+        let offset = unit / length * reach
+
+        var knotValues: [Double] = []
+        var multiplicities: [Int] = []
+        for knot in profile.knots {
+            if let last = knotValues.last, last == knot { multiplicities[multiplicities.count - 1] += 1 } else {
+                knotValues.append(knot)
+                multiplicities.append(1)
+            }
+        }
+        let net = profile.controlPoints.map { [$0 - offset, $0 + offset] }
+        var weights: [[Double]]?
+        if let profileWeights = profile.weights { weights = profileWeights.map { [$0, $0] } }
+        let spline = try STEP.BSplineSurface(uDegree: profile.degree, vDegree: 1, controlPoints: net, weights: weights,
+                                            uMultiplicities: multiplicities, uKnotValues: knotValues,
+                                            vMultiplicities: [2, 2], vKnotValues: [-reach, reach])
+        if let limitation = spline.limitation {
+            throw STEP.ParseError("SURFACE_OF_LINEAR_EXTRUSION #\(id) \(limitation); not supported yet")
+        }
+        return .bspline(spline)
     }
 
     // MARK: Surface of revolution
