@@ -12,6 +12,15 @@ struct ContentView: View {
             .navigationSubtitle(viewer.subtitle)
             .toolbar {
                 ToolbarItem {
+                    Picker("Sample", selection: sampleSelection) {
+                        Text("Samples…").tag(URL?.none)
+                        ForEach(viewer.samples, id: \.self) { url in
+                            Text(url.deletingPathExtension().lastPathComponent).tag(URL?.some(url))
+                        }
+                    }
+                    .help("Switch between the bundled test models")
+                }
+                ToolbarItem {
                     Button { viewer.isShowingReport = true } label: { Label("Import report", systemImage: "info.circle") }
                         .disabled(viewer.document == nil)
                 }
@@ -20,7 +29,7 @@ struct ContentView: View {
                 }
             }
             .fileImporter(isPresented: $viewer.isImporting, allowedContentTypes: Viewer.stepTypes) { result in
-                if case .success(let url) = result { viewer.open(url) }
+                if case .success(let url) = result { viewer.selectedSample = nil; viewer.open(url) }
             }
             .dropDestination(for: URL.self) { urls, _ in
                 guard let url = urls.first else { return false }
@@ -54,6 +63,11 @@ struct ContentView: View {
             } message: {
                 Text(viewer.errorMessage ?? "")
             }
+    }
+
+    private var sampleSelection: Binding<URL?> {
+        Binding(get: { viewer.selectedSample },
+                set: { if let url = $0 { viewer.openSample(url) } })
     }
 
     private var errorShown: Binding<Bool> {

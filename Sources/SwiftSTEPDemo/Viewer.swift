@@ -16,6 +16,21 @@ final class Viewer: ObservableObject {
     @Published var isImporting = false
     @Published var isShowingReport = false
 
+    /// The sample being shown, when it came from the bundled list (nil for files opened by hand).
+    @Published var selectedSample: URL?
+
+    /// Bundled models: the die cube plus the hard cases in `Samples/`, sorted by name.
+    let samples: [URL] = {
+        var urls = Bundle.module.urls(forResourcesWithExtension: "step", subdirectory: "Samples") ?? []
+        if let die = Bundle.module.url(forResource: "die_cube", withExtension: "step") { urls.append(die) }
+        return urls.sorted { $0.lastPathComponent < $1.lastPathComponent }
+    }()
+
+    func openSample(_ url: URL) {
+        selectedSample = url
+        open(url)
+    }
+
     private var loadTask: Task<Void, Never>?
     private var started = false
 
@@ -44,8 +59,8 @@ final class Viewer: ObservableObject {
         started = true
         if let path = CommandLine.arguments.dropFirst().first(where: { FileManager.default.fileExists(atPath: $0) }) {
             open(URL(fileURLWithPath: path))
-        } else if let sample = Bundle.module.url(forResource: "die_cube", withExtension: "step") {
-            open(sample)
+        } else if let sample = samples.first(where: { $0.lastPathComponent == "die_cube.step" }) ?? samples.first {
+            openSample(sample)
         } else {
             let message = "The bundled sample die_cube.step is missing from the resource bundle "
                 + "(\(Bundle.module.bundlePath)). Check that Package.swift lists it under `resources:`."

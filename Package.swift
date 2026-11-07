@@ -15,7 +15,8 @@ let package = Package(
                           // Paths are relative to the target folder (Sources/SwiftSTEPDemo).
                           resources: [
                               .process("Shaders.metal"),   // compiled into the bundle's default.metallib
-                              .copy("die_cube.step")       // the sample opened at launch
+                              .copy("die_cube.step"),      // the sample opened at launch
+                              .copy("Samples")             // hard-case models behind the toolbar dropdown
                           ]),
         .testTarget(name: "SwiftSTEPTests", dependencies: ["SwiftSTEP"]),
     ]
