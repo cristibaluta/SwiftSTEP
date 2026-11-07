@@ -63,18 +63,35 @@ extension STEP {
             }
         }
 
-        /// True when u wraps every 2π.
+        /// True when u wraps every `periodU`: round surfaces, and a B-spline that closes in u.
         public var isPeriodicU: Bool {
             switch self {
-                case .plane, .bspline: return false
+                case .plane: return false
+                case .bspline(let spline): return spline.closedU
                 case .cylinder, .cone, .sphere, .torus: return true
             }
         }
 
-        /// True when v also wraps every 2π (only the torus).
+        /// True when v wraps every `periodV`: the torus, and a B-spline that closes in v.
         public var isPeriodicV: Bool {
-            if case .torus = self { return true }
-            return false
+            switch self {
+                case .torus: return true
+                case .bspline(let spline): return spline.closedV
+                case .plane, .cylinder, .cone, .sphere: return false
+            }
+        }
+
+        /// One turn in u: 2π for the analytic surfaces, the knot span for a closed B-spline.
+        /// Only meaningful when `isPeriodicU`.
+        public var periodU: Double {
+            if case .bspline(let spline) = self { return spline.uDomain.upperBound - spline.uDomain.lowerBound }
+            return STEPAngle.twoPi
+        }
+
+        /// One turn in v. Only meaningful when `isPeriodicV`.
+        public var periodV: Double {
+            if case .bspline(let spline) = self { return spline.vDomain.upperBound - spline.vDomain.lowerBound }
+            return STEPAngle.twoPi
         }
 
         private static func radial(_ frame: Frame, _ u: Double) -> SIMD3<Double> {

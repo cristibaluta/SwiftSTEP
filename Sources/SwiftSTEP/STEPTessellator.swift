@@ -11,8 +11,10 @@ import simd
 /// circles) and the seam-edge form of the same, and freeform faces on a
 /// B_SPLINE_SURFACE_WITH_KNOTS (rational or not, simple or complex record). Not yet: swept
 /// surfaces (revolution, linear extrusion), B-splines without explicit knots or that close on
-/// themselves or have a collapsed side, faces that reach a sphere's pole or a cone's apex,
-/// vertex or polyline loops, oriented faces. Any such face drops the whole body's surface,
+/// themselves or have a collapsed side, vertex or polyline loops, oriented faces. A face may
+/// contain a sphere's pole or a cone's apex when its seam edge runs out to it and back (a
+/// hemisphere, say), or touch it at a loop vertex; one that winds round a pole with no seam
+/// edge to say which pole is not supported yet. Any such face drops the whole body's surface,
 /// with a diagnostic.
 ///
 /// Task-confined like `STEPFile`; use through `STEPEdgeImporter.parseGeometry`.
@@ -425,6 +427,28 @@ final class STEPTessellator {
         return boundOrientation == "T" ? points : points.reversed()
     }
 
+    /// Removes zero-width spikes from a closed loop: where it runs out along some path and comes
+    /// straight back (a seam edge used once in each direction). `tips` are the far ends of the
+    /// spikes, which is how a pole inside the face shows up.
+    private static func cancelSpikes(_ input: [SIMD3<Double>]) -> (points: [SIMD3<Double>], tips: [SIMD3<Double>]) {
+        var stack: [SIMD3<Double>] = []
+        var tips: [SIMD3<Double>] = []
+        stack.reserveCapacity(input.count)
+        for point in input {
+            if stack.count >= 2, simd_distance(stack[stack.count - 2], point) <= connectionTolerance {
+                tips.append(stack.removeLast())
+                continue
+            }
+            stack.append(point)
+        }
+        // The loop is cyclic: a spike can straddle its first point.
+        while stack.count >= 4, simd_distance(stack[stack.count - 1], stack[1]) <= connectionTolerance {
+            tips.append(stack.removeFirst())
+            stack.removeLast()
+        }
+        return (stack, tips)
+    }
+
     /// A boundary loop in the surface's (u, v) plane.
     private struct ParamLoop {
         typealias Vertex = STEPSlabTriangulator.Vertex
@@ -481,32 +505,58 @@ final class STEPTessellator {
         if let worst = raw.map({ $0.distance }).max(), worst > tolerance {
             throw STEP.ParseError("Face boundary lies \((worst * 1000).rounded() / 1000) mm off its \(surface.kindName)")
         }
-        if raw.contains(where: { $0.isPole }) {
-            throw STEP.ParseError("Face reaches a pole or apex of its \(surface.kindName); not supported yet")
+        let periodU = surface.periodU
+        let periodV = surface.periodV
+
+        // A vertex on a pole (or cone apex) has no longitude. Seen from (u, v) the boundary runs
+        // along the pole's parallel there, from the longitude of the previous vertex to that of
+        // the next: one point becomes two, and the segment between them is a point in space.
+        var entries: [(u: Double, v: Double, position: SIMD3<Double>)] = []
+        entries.reserveCapacity(raw.count + 2)
+        let count = raw.count
+        guard raw.contains(where: { !$0.isPole }) else { throw STEP.ParseError("Face loop is degenerate") }
+        for i in 0..<count {
+            guard raw[i].isPole else {
+                entries.append((raw[i].u, raw[i].v, points[i]))
+                continue
+            }
+            if raw[(i + count - 1) % count].isPole { continue } // inside a run of pole samples
+            var before = (i + count - 1) % count
+            while raw[before].isPole { before = (before + count - 1) % count }
+            var after = (i + 1) % count
+            while raw[after].isPole { after = (after + 1) % count }
+            if surface.isPeriodicU {
+                var turn = raw[after].u - raw[before].u
+                turn -= periodU * (turn / periodU).rounded()
+                guard abs(turn) < 0.5 * periodU - 1e-3 else {
+                    throw STEP.ParseError("Face turns by half a turn or more at a pole of its \(surface.kindName); not supported yet")
+                }
+            }
+            entries.append((raw[before].u, raw[i].v, points[i]))
+            entries.append((raw[after].u, raw[i].v, points[i]))
         }
-        let twoPi = STEPAngle.twoPi
-        var u = raw.map { $0.u }
-        var v = raw.map { $0.v }
-        for i in 1..<raw.count {
-            if surface.isPeriodicU { u[i] += twoPi * ((u[i - 1] - u[i]) / twoPi).rounded() }
-            if surface.isPeriodicV { v[i] += twoPi * ((v[i - 1] - v[i]) / twoPi).rounded() }
+        var u = entries.map { $0.u }
+        var v = entries.map { $0.v }
+        for i in 1..<entries.count {
+            if surface.isPeriodicU { u[i] += periodU * ((u[i - 1] - u[i]) / periodU).rounded() }
+            if surface.isPeriodicV { v[i] += periodV * ((v[i - 1] - v[i]) / periodV).rounded() }
         }
         var closingU = u[0]
         var closingV = v[0]
-        if surface.isPeriodicU { closingU += twoPi * ((u[u.count - 1] - u[0]) / twoPi).rounded() }
-        if surface.isPeriodicV { closingV += twoPi * ((v[v.count - 1] - v[0]) / twoPi).rounded() }
+        if surface.isPeriodicU { closingU += periodU * ((u[u.count - 1] - u[0]) / periodU).rounded() }
+        if surface.isPeriodicV { closingV += periodV * ((v[v.count - 1] - v[0]) / periodV).rounded() }
         guard (u + v + [closingU, closingV]).allSatisfy({ $0.isFinite }) else {
             throw STEP.ParseError("Face loop has nonfinite parameters")
         }
         var vertices: [STEPSlabTriangulator.Vertex] = []
-        vertices.reserveCapacity(points.count)
-        for i in points.indices {
-            vertices.append(STEPSlabTriangulator.Vertex(u: u[i], v: v[i], position: points[i]))
+        vertices.reserveCapacity(entries.count)
+        for i in entries.indices {
+            vertices.append(STEPSlabTriangulator.Vertex(u: u[i], v: v[i], position: entries[i].position))
         }
         return ParamLoop(vertices: vertices,
-                         closing: STEPSlabTriangulator.Vertex(u: closingU, v: closingV, position: points[0]),
-                         windingU: Int(((closingU - u[0]) / twoPi).rounded()),
-                         windingV: Int(((closingV - v[0]) / twoPi).rounded()))
+                         closing: STEPSlabTriangulator.Vertex(u: closingU, v: closingV, position: entries[0].position),
+                         windingU: Int(((closingU - u[0]) / periodU).rounded()),
+                         windingV: Int(((closingV - v[0]) / periodV).rounded()))
     }
 
     // MARK: Face geometry
@@ -515,10 +565,20 @@ final class STEPTessellator {
                                 edges: [Int: STEP.Edge], into mesh: inout STEP.BodyMesh) throws {
         guard !parsed.boundIDs.isEmpty else { throw STEP.ParseError("Face has no boundary") }
         var loops: [ParamLoop] = []
+        // Poles the face contains in its interior, found where a seam edge runs out to one and back.
+        var poles: [STEPSlabTriangulator.Vertex] = []
         for bound in parsed.boundIDs {
-            loops.append(try parametrize(try loopPoints(bound: bound, edges: edges), on: surface))
+            let loop = Self.cancelSpikes(try loopPoints(bound: bound, edges: edges))
+            guard loop.points.count >= 3 else { throw STEP.ParseError("Face loop is degenerate") }
+            for tip in loop.tips {
+                let parameters = surface.parameters(of: tip)
+                if parameters.isPole {
+                    poles.append(STEPSlabTriangulator.Vertex(u: 0, v: parameters.v, position: tip))
+                }
+            }
+            loops.append(try parametrize(loop.points, on: surface))
         }
-        let segments = try boundarySegments(loops, surface: surface)
+        let segments = try boundarySegments(loops, poles: poles, surface: surface)
         let vValues = segments.flatMap { [$0.a.v, $0.b.v] }
         guard let vLow = vValues.min(), let vHigh = vValues.max() else { throw STEP.ParseError("Face has no boundary") }
 
@@ -556,12 +616,36 @@ final class STEPTessellator {
 
     /// The face's region as plain segments in (u, v): every closed loop as it is, or, for a face
     /// that goes all the way round its axis, the two wrapping loops cut to one period.
-    private func boundarySegments(_ loops: [ParamLoop], surface: STEP.Surface) throws -> [STEPSlabTriangulator.Segment] {
+    private func boundarySegments(_ loops: [ParamLoop], poles: [STEPSlabTriangulator.Vertex],
+                                  surface: STEP.Surface) throws -> [STEPSlabTriangulator.Segment] {
         guard loops.allSatisfy({ $0.windingV == 0 }) else {
             throw STEP.ParseError("Face wraps round the \(surface.kindName)'s tube; not supported yet")
         }
         let wrapping = loops.filter { $0.windingU != 0 }
         let plain = loops.filter { $0.windingU == 0 }
+
+        if !poles.isEmpty {
+            // A loop that goes once round the axis with the pole inside it (a hemisphere, a cap):
+            // the region lies between the loop and the pole's parallel, which closes it.
+            guard poles.count == 1, wrapping.count == 1, abs(wrapping[0].windingU) == 1 else {
+                throw STEP.ParseError("Face contains a pole or apex of its \(surface.kindName) in a way that is not supported yet")
+            }
+            let period = surface.periodU
+            let start = wrapping[0].vertices[0].u
+            let window = start...(start + period)
+            var from = poles[0]
+            var to = poles[0]
+            from.u = window.lowerBound
+            to.u = window.upperBound
+            var segments = Self.cut(wrapping[0], to: window, period: period)
+            segments.append(STEPSlabTriangulator.Segment(a: from, b: to))
+            let vLow = min(wrapping[0].vRange.lowerBound, poles[0].v)
+            let vHigh = max(wrapping[0].vRange.upperBound, poles[0].v)
+            for loop in plain {
+                segments.append(contentsOf: try align(loop, surface: surface, referenceU: window, referenceV: vLow...vHigh).segments)
+            }
+            return segments
+        }
 
         if wrapping.isEmpty {
             // Closed polygons. For a periodic surface, bring every loop into the outermost
@@ -588,13 +672,13 @@ final class STEPTessellator {
               abs(wrapping[0].windingU) == 1 else {
             throw STEP.ParseError("Face wraps round the \(surface.kindName)'s axis in a way that is not supported yet")
         }
-        let twoPi = STEPAngle.twoPi
+        let period = surface.periodU
         let start = wrapping[0].vertices[0].u
-        let window = start...(start + twoPi)
+        let window = start...(start + period)
         let vLow = min(wrapping[0].vRange.lowerBound, wrapping[1].vRange.lowerBound)
         let vHigh = max(wrapping[0].vRange.upperBound, wrapping[1].vRange.upperBound)
         var segments: [STEPSlabTriangulator.Segment] = []
-        for loop in wrapping { segments.append(contentsOf: Self.cut(loop, to: window)) }
+        for loop in wrapping { segments.append(contentsOf: Self.cut(loop, to: window, period: period)) }
         for loop in plain {
             segments.append(contentsOf: try align(loop, surface: surface, referenceU: window, referenceV: vLow...vHigh).segments)
         }
@@ -610,12 +694,13 @@ final class STEPTessellator {
     /// Moves a closed loop by whole turns into the reference's range and checks it fits.
     private func align(_ loop: ParamLoop, surface: STEP.Surface, referenceU: ClosedRange<Double>,
                        referenceV: ClosedRange<Double>) throws -> ParamLoop {
-        let twoPi = STEPAngle.twoPi
+        let periodU = surface.periodU
+        let periodV = surface.periodV
         func mid(_ range: ClosedRange<Double>) -> Double { (range.lowerBound + range.upperBound) / 2 }
         var du = 0.0
         var dv = 0.0
-        if surface.isPeriodicU { du = twoPi * ((mid(referenceU) - mid(loop.uRange)) / twoPi).rounded() }
-        if surface.isPeriodicV { dv = twoPi * ((mid(referenceV) - mid(loop.vRange)) / twoPi).rounded() }
+        if surface.isPeriodicU { du = periodU * ((mid(referenceU) - mid(loop.uRange)) / periodU).rounded() }
+        if surface.isPeriodicV { dv = periodV * ((mid(referenceV) - mid(loop.vRange)) / periodV).rounded() }
         let moved = loop.shifted(du: du, dv: dv)
         let slack = 1e-6
         if surface.isPeriodicU,
@@ -631,16 +716,16 @@ final class STEPTessellator {
 
     /// One period of a wrapping loop: the loop and its copies one turn up or down, each
     /// segment clipped to the window. Every vertical line crosses the loop once.
-    private static func cut(_ loop: ParamLoop, to window: ClosedRange<Double>) -> [STEPSlabTriangulator.Segment] {
-        let twoPi = STEPAngle.twoPi
+    private static func cut(_ loop: ParamLoop, to window: ClosedRange<Double>,
+                            period: Double) -> [STEPSlabTriangulator.Segment] {
         let range = loop.uRange
-        let first = Int(((window.lowerBound - range.upperBound) / twoPi).rounded(.up))
-        let last = Int(((window.upperBound - range.lowerBound) / twoPi).rounded(.down))
+        let first = Int(((window.lowerBound - range.upperBound) / period).rounded(.up))
+        let last = Int(((window.upperBound - range.lowerBound) / period).rounded(.down))
         guard first <= last else { return [] }
         let base = loop.segments
         var result: [STEPSlabTriangulator.Segment] = []
         for k in first...last {
-            let shift = Double(k) * twoPi
+            let shift = Double(k) * period
             for segment in base {
                 var a = segment.a
                 var b = segment.b

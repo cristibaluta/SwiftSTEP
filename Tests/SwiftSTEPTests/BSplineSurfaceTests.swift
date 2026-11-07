@@ -236,14 +236,15 @@ private func quarterCircleSurface() throws -> STEP.BSplineSurface {
         #expect(divisions.v == 1)
     }
 
-    @Test func surfacesThatCloseOnThemselvesOrCollapseAreRefused() throws {
+    @Test func surfacesThatCloseArePeriodicAndCollapsedOnesAreRefused() throws {
         let closed = try STEP.BSplineSurface(
             uDegree: 2, vDegree: 1,
             controlPoints: [[SIMD3(0, 0, 0), SIMD3(0, 0, 4)],
                             [SIMD3(10, 5, 0), SIMD3(10, 5, 4)],
                             [SIMD3(0, 0, 0), SIMD3(0, 0, 4)]],
             weights: nil, uMultiplicities: [3, 3], uKnotValues: [0, 1], vMultiplicities: [2, 2], vKnotValues: [0, 4])
-        #expect(closed.limitation?.contains("closes on itself in u") == true)
+        #expect(closed.limitation == nil)
+        #expect(closed.closedU && !closed.closedV)
 
         let collapsed = try STEP.BSplineSurface(
             uDegree: 2, vDegree: 1,

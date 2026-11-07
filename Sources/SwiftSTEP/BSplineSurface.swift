@@ -12,10 +12,11 @@ extension STEP {
     /// The parametrisation is the file's own: u and v run over the knot domains, and
     /// `∂P/∂u × ∂P/∂v` is the STEP surface normal, like every other `STEP.Surface`.
     ///
-    /// Not supported (reported through `limitation`, so the face fails with a reason instead of
-    /// getting a wrong mesh): surfaces that close on themselves in u or v, and surfaces with a side
-    /// collapsed to a point. Projecting a boundary point onto the seam of a closed surface, or onto
-    /// a pole, has no unique (u, v).
+    /// A surface that closes on itself in u or v (`closedU`, `closedV`) is periodic there, with the
+    /// knot domain as its period: a boundary point on the seam projects to either end, and the
+    /// tessellator unwraps the loop by whole periods. Not supported (reported through `limitation`,
+    /// so the face fails with a reason instead of getting a wrong mesh): surfaces with a side
+    /// collapsed to a point, where a boundary point has no unique (u, v).
     public struct BSplineSurface: Sendable {
         static let maximumDegree = 25
         static let maximumControlPoints = 500_000
@@ -30,6 +31,9 @@ extension STEP {
         let size: Double
         /// Why this surface cannot carry a trimmed face yet, or `nil`.
         private(set) var limitation: String?
+        /// The surface's low and high sides coincide, so the surface is periodic in that direction.
+        public private(set) var closedU = false
+        public private(set) var closedV = false
 
         /// Weighted control points `(x·w, y·w, z·w, w)`, row-major in u: index `i * vCount + j`.
         private let controls: [SIMD4<Double>]
@@ -349,9 +353,9 @@ extension STEP {
 
         // MARK: Limits
 
-        /// A surface that closes on itself or has a collapsed side cannot be parametrised by a
-        /// boundary point alone: the seam (or pole) belongs to two (u, v) positions.
-        private func findLimitation() -> String? {
+        /// Sets `closedU` and `closedV`, and returns why the surface cannot carry a trimmed face when
+        /// it has a side collapsed to a point: a pole belongs to many (u, v) positions.
+        private mutating func findLimitation() -> String? {
             let probes = 9
             let coincident = 1e-6 * size
             func sides(_ fixedU: Bool, _ bound: Double) -> [SIMD3<Double>] {
@@ -371,8 +375,8 @@ extension STEP {
                     return "has a side collapsed to a point"
                 }
             }
-            if zip(uLow, uHigh).allSatisfy({ simd_distance($0, $1) <= coincident }) { return "closes on itself in u" }
-            if zip(vLow, vHigh).allSatisfy({ simd_distance($0, $1) <= coincident }) { return "closes on itself in v" }
+            closedU = zip(uLow, uHigh).allSatisfy { simd_distance($0, $1) <= coincident }
+            closedV = zip(vLow, vHigh).allSatisfy { simd_distance($0, $1) <= coincident }
             return nil
         }
     }

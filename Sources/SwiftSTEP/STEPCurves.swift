@@ -290,7 +290,12 @@ final class STEPCurveResolver {
         }
         var magnitude = 0.0
         for axis in 0..<3 { magnitude = max(magnitude, abs(low[axis]), abs(high[axis])) }
-        return max(Self.relativeVertexTolerance * simd_length(high - low), 1e-9 * (1 + magnitude), 1e-7)
+        // CAD exports often place a vertex a few thousandths of a millimetre off a freeform curve
+        // (the file's own accuracy is typically 0.01 mm), so the floor follows the chord tolerance,
+        // but never more than 1% of the curve's extent, so a short curve is not swallowed by it.
+        let extent = simd_length(high - low)
+        return max(Self.relativeVertexTolerance * extent, min(chordTolerance, 1e-2 * extent),
+                   1e-9 * (1 + magnitude), 1e-7)
     }
 
     /// Splits the edge into directed runs of the curve's parameter domain.

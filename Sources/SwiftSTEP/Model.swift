@@ -209,13 +209,16 @@ extension STEP.Geometry {
             return "An edge of this face was skipped while reading the wireframe (see the edge note); fix that curve and the face follows."
         }
         if reason.contains("pole or apex") {
-            return "The face touches a sphere pole or cone tip, where the parameter mapping collapses. Not implemented yet."
+            return "The face touches a sphere pole or cone tip in a way the loop handling cannot resolve (no seam edge to say which pole is inside, or two poles). Not implemented yet."
         }
         if reason.contains("wraps round") {
             return "The face goes around a torus tube or in an unusual way round an axis. Not implemented yet."
         }
         if reason.contains("seam") {
             return "The face's boundary crosses the surface's periodic seam in a way the loop alignment cannot resolve."
+        }
+        if reason.contains("Face loop is degenerate") {
+            return "The face's loop has fewer than three distinct sample points, so it has no area to fill."
         }
         if reason.contains("not connected") || reason.contains("not closed") || reason.contains("degenerate") {
             return "The face's edges do not form a closed loop within 1e-6 mm: a gap in the file, or an edge that was resampled differently."
@@ -227,7 +230,7 @@ extension STEP.Geometry {
             return "The model exceeds the 1,000,000 triangle cap; raise `chordToleranceMM` to coarsen the sampling."
         }
         if reason.contains("B-spline") {
-            return "Only B-spline surfaces with explicit knots that do not close on themselves are supported."
+            return "Only B-spline surfaces with explicit knots and no side collapsed to a point are supported."
         }
         if reason.contains("Unsupported face type") || reason.contains("Unsupported face bound") || reason.contains("Unsupported loop type") {
             return "Only ADVANCED_FACE / FACE_SURFACE faces with EDGE_LOOP boundaries are supported (no ORIENTED_FACE, vertex or poly loops)."
