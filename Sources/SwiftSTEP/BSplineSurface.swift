@@ -252,8 +252,11 @@ extension STEP {
                 var scale = 1.0
                 var moved = false
                 for _ in 0..<12 {
-                    let nextU = min(max(u + scale * stepU, uDomain.lowerBound), uDomain.upperBound)
-                    let nextV = min(max(v + scale * stepV, vDomain.lowerBound), vDomain.upperBound)
+                    // A direction that closes on itself wraps round its seam instead of stopping at the
+                    // domain end: a seam point can belong at either end, and the search may start at
+                    // the wrong one.
+                    let nextU = Self.advance(u + scale * stepU, in: uDomain, periodic: closedU)
+                    let nextV = Self.advance(v + scale * stepV, in: vDomain, periodic: closedV)
                     let squared = simd_distance_squared(point(u: nextU, v: nextV), target)
                     if squared <= current {
                         moved = abs(nextU - u) > 1e-14 * uLength || abs(nextV - v) > 1e-14 * vLength
@@ -269,6 +272,18 @@ extension STEP {
             u = Self.snapped(u, to: uDomain)
             v = Self.snapped(v, to: vDomain)
             return (u, v, simd_distance(point(u: u, v: v), target))
+        }
+
+        /// `value` kept inside `domain`: wrapped by whole periods when the surface is periodic
+        /// there, clamped to the nearest end otherwise.
+        private static func advance(_ value: Double, in domain: ClosedRange<Double>, periodic: Bool) -> Double {
+            if periodic {
+                let length = domain.upperBound - domain.lowerBound
+                var wrapped = domain.lowerBound + (value - domain.lowerBound).truncatingRemainder(dividingBy: length)
+                if wrapped < domain.lowerBound { wrapped += length }
+                return wrapped
+            }
+            return min(max(value, domain.lowerBound), domain.upperBound)
         }
 
         private static func snapped(_ value: Double, to domain: ClosedRange<Double>) -> Double {
