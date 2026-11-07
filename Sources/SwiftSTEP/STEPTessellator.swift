@@ -415,6 +415,56 @@ final class STEPTessellator {
         let wrapping = loops.filter { $0.windingU != 0 }
         let plain = loops.filter { $0.windingU == 0 }
 
+        if wrapping.isEmpty, surface.isPeriodicU, poles.count >= 2,
+           let low = poles.min(by: { $0.v < $1.v }), let high = poles.max(by: { $0.v < $1.v }), high.v - low.v > 1e-6 {
+            // A sphere (or similar) with both poles inside the face and only holes in it: seam
+            // spikes to each pole, loops that close on themselves. The region is the whole
+            // strip between the two pole parallels, minus the holes. The strip's ends are the
+            // seam, so it starts in a gap between the holes where no hole straddles it.
+            let period = surface.periodU
+            var covered: [(Double, Double)] = []
+            for loop in plain {
+                let range = loop.uRange
+                let width = range.upperBound - range.lowerBound
+                guard width < period else {
+                    throw STEP.ParseError("Face contains the poles of its \(surface.kindName) with a hole that spans a whole turn; not supported yet")
+                }
+                let start = range.lowerBound - (range.lowerBound / period).rounded(.down) * period
+                covered.append((start, start + width))
+                if start + width > period { covered.append((start - period, start + width - period)) }
+            }
+            covered.sort { $0.0 < $1.0 }
+            var start = 0.0
+            if !covered.isEmpty {
+                // The widest gap between holes, taken cyclically; its middle is where the seam goes.
+                var bestGap = -1.0
+                var reach = covered[0].1
+                for interval in covered.dropFirst() {
+                    if interval.0 > reach, interval.0 - reach > bestGap {
+                        bestGap = interval.0 - reach
+                        start = (reach + interval.0) / 2
+                    }
+                    reach = max(reach, interval.1)
+                }
+                let wrapGap = covered[0].0 + period - reach
+                if wrapGap > bestGap { bestGap = wrapGap; start = reach + wrapGap / 2 }
+                guard bestGap > 1e-6 else {
+                    throw STEP.ParseError("Face contains the poles of its \(surface.kindName) with holes that leave no room for its seam; not supported yet")
+                }
+            }
+            let window = start...(start + period)
+            var bottomFrom = low, bottomTo = low, topFrom = high, topTo = high
+            bottomFrom.u = window.lowerBound; bottomTo.u = window.upperBound
+            topFrom.u = window.lowerBound; topTo.u = window.upperBound
+            var segments = [STEPSlabTriangulator.Segment(a: bottomFrom, b: bottomTo),
+                            STEPSlabTriangulator.Segment(a: topFrom, b: topTo)]
+            for loop in plain {
+                segments.append(contentsOf: try align(loop, surface: surface, referenceU: window,
+                                                      referenceV: low.v...high.v).segments)
+            }
+            return segments
+        }
+
         if !poles.isEmpty {
             // A loop that goes once round the axis with the pole inside it (a hemisphere, a cap):
             // the region lies between the loop and the pole's parallel, which closes it.

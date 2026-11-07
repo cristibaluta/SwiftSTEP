@@ -611,7 +611,7 @@ final class STEPCurveResolver {
     /// B_SPLINE_CURVE + B_SPLINE_CURVE_WITH_KNOTS (+ RATIONAL_B_SPLINE_CURVE for weights); and the
     /// BEZIER_CURVE, UNIFORM_B_SPLINE_CURVE and QUASI_UNIFORM_CURVE types, simple or complex, whose
     /// knots are implied.
-    private func splineGeometry(_ id: Int) throws -> STEPBSpline {
+    func splineGeometry(_ id: Int) throws -> STEPBSpline {
         let parts = try file.components(id)
         let degree: Int
         let controlIDs: [Int]

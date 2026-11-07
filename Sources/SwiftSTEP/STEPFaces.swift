@@ -103,6 +103,9 @@ final class STEPFaceReader {
         if components.contains(where: { $0.type == "B_SPLINE_SURFACE_WITH_KNOTS" }) {
             return try parseBSplineSurface(id, components: components, scale: scale)
         }
+        if let revolution = components.first(where: { $0.type == "SURFACE_OF_REVOLUTION" }) {
+            return try parseSurfaceOfRevolution(id, parameters: revolution.parameters, scale: scale)
+        }
         guard let part = components.first(where: { Self.surfaceTypes.contains($0.type) }) else {
             // A complex record starts with mixins such as BOUNDED_SURFACE; name the real kind.
             let kind = components.map { $0.type }.first(where: { !Self.surfaceMixins.contains($0) })
@@ -147,6 +150,93 @@ final class STEPFaceReader {
                 guard major > minor else { throw STEP.ParseError("Self-intersecting torus at #\(id) is not supported") }
                 return .torus(frame, major: major, minor: minor)
         }
+    }
+
+    // MARK: Surface of revolution
+
+    /// A B-spline curve revolved about an axis, rebuilt exactly as a rational B-spline surface:
+    /// every control point turns into a nine-point quadratic circle, so u is the angle (0...2π,
+    /// counter-clockwise about the axis) and v the curve's own parameter, as STEP defines it.
+    /// This also covers the self-intersecting ("spindle") tori CAD systems write this way.
+    /// Only a B-spline profile in a plane through the axis is supported.
+    private func parseSurfaceOfRevolution(_ id: Int, parameters p: [STEPValue], scale: Double) throws -> STEP.Surface {
+        guard let curveID = try p.argument(1).reference, let axisID = try p.argument(2).reference else {
+            throw STEP.ParseError("Invalid SURFACE_OF_REVOLUTION at #\(id)")
+        }
+        guard (try? file.components(curveID))?.contains(where: { $0.type == "B_SPLINE_CURVE_WITH_KNOTS" }) == true else {
+            let kind = surfaceTypeName(curveID) ?? "curve"
+            throw STEP.ParseError("Unsupported SURFACE_OF_REVOLUTION at #\(id): only B-spline profiles are supported, found \(kind)")
+        }
+        let resolver = STEPCurveResolver(file: file, scaleToMM: scale, chordTolerance: chordTolerance,
+                                         angleScaleToRadians: { 1 })
+        let profile = try resolver.splineGeometry(curveID)
+
+        let axisParameters = try file.parameters(axisID, type: "AXIS1_PLACEMENT")
+        let origin = try cartesianPoint(try axisParameters.reference(at: 1), scale: scale)
+        var axis = SIMD3<Double>(0, 0, 1)
+        if let directionID = try axisParameters.argument(2).reference {
+            let direction = try file.parameters(directionID, type: "DIRECTION")
+            guard let ratios = try direction.argument(1).list else { throw STEP.ParseError("Invalid axis direction at #\(axisID)") }
+            let values = ratios.compactMap { $0.number }
+            guard values.count == 3 else { throw STEP.ParseError("Invalid axis direction at #\(axisID)") }
+            axis = SIMD3(values[0], values[1], values[2])
+        }
+        let axisLength = simd_length(axis)
+        guard axisLength.isFinite, axisLength > 0 else { throw STEP.ParseError("Zero-length revolution axis at #\(axisID)") }
+        axis /= axisLength
+
+        // The radial direction where the angle is zero, from the first point off the axis.
+        let extent = profile.controlPoints.map { simd_length($0 - origin) }.max() ?? 1
+        var zero: SIMD3<Double>?
+        for point in profile.controlPoints {
+            let radial = (point - origin) - axis * simd_dot(point - origin, axis)
+            if simd_length(radial) > 1e-9 * extent { zero = radial / simd_length(radial); break }
+        }
+        guard let e1 = zero else { throw STEP.ParseError("SURFACE_OF_REVOLUTION #\(id) lies on its axis") }
+        let e2 = simd_cross(axis, e1)
+
+        let quarter = 0.5.squareRoot()
+        let circleWeights = [1, quarter, 1, quarter, 1, quarter, 1, quarter, 1]
+        let circleOffsets: [(Double, Double)] = [(1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1), (1, 0)]
+        var net: [[SIMD3<Double>]] = []
+        var weights: [[Double]] = []
+        for (offset, circleWeight) in zip(circleOffsets, circleWeights) {
+            var row: [SIMD3<Double>] = []
+            var weightRow: [Double] = []
+            for (index, point) in profile.controlPoints.enumerated() {
+                let along = simd_dot(point - origin, axis)
+                let centre = origin + axis * along
+                let radial = point - centre
+                // The profile must lie in the plane through the axis that holds angle zero. Its radius
+                // is signed: a spindle torus's profile crosses the axis, and the revolution is still
+                // exact because the circle's control points scale linearly with that radius.
+                let radius = simd_dot(radial, e1)
+                guard simd_length(radial - e1 * radius) <= 1e-6 * extent else {
+                    throw STEP.ParseError("SURFACE_OF_REVOLUTION #\(id): profile is not in a plane through the axis")
+                }
+                row.append(centre + (e1 * offset.0 + e2 * offset.1) * radius)
+                weightRow.append((profile.weights?[index] ?? 1) * circleWeight)
+            }
+            net.append(row)
+            weights.append(weightRow)
+        }
+        // Distinct knot values and their multiplicities, from the expanded vector.
+        var knotValues: [Double] = []
+        var multiplicities: [Int] = []
+        for knot in profile.knots {
+            if let last = knotValues.last, last == knot { multiplicities[multiplicities.count - 1] += 1 } else {
+                knotValues.append(knot)
+                multiplicities.append(1)
+            }
+        }
+        let spline = try STEP.BSplineSurface(uDegree: 2, vDegree: profile.degree, controlPoints: net, weights: weights,
+                                            uMultiplicities: [3, 2, 2, 2, 3],
+                                            uKnotValues: [0, 0.5 * .pi, .pi, 1.5 * .pi, 2 * .pi],
+                                            vMultiplicities: multiplicities, vKnotValues: knotValues)
+        if let limitation = spline.limitation {
+            throw STEP.ParseError("SURFACE_OF_REVOLUTION #\(id) \(limitation); not supported yet")
+        }
+        return .bspline(spline)
     }
 
     // MARK: B-spline surfaces
