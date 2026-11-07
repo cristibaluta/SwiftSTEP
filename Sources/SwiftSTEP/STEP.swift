@@ -9,7 +9,7 @@ import Foundation
 ///
 /// Output is plain `simd` data: edge polylines are `[SIMD3<Double>]` in millimetres (source
 /// coordinates), meshes are `[SIMD3<Float>]`. The polylines are display geometry, not machining
-/// contours. Assemblies are rejected; unsupported curves are skipped with a `Diagnostic`.
+/// contours. Assembly placements are not applied (a warning says so); unsupported curves are skipped with a `Diagnostic`.
 public enum STEP {
 
     // MARK: Synchronous (call from a background task, never the main actor)

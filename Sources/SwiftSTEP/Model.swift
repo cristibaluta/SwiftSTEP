@@ -13,7 +13,8 @@ extension STEP {
             case truncated
             /// Anything else wrong with the file's content. Per-edge and per-face errors use this.
             case malformed
-            /// The file places part instances (assemblies), which are not supported yet.
+            /// No longer thrown: a file with assembly entities imports with an `assembly-untransformed`
+            /// warning. Kept so existing `switch` statements still compile.
             case assembly
             /// The length unit of a representation context could not be resolved, and
             /// `Options.assumedUnitScaleToMM` was not set.
@@ -75,7 +76,8 @@ extension STEP {
     public struct EdgeID: Hashable, Sendable {
         public let importID: UUID
         public let bodyID: BodyID
-        /// The EDGE_CURVE `#id`.
+        /// The EDGE_CURVE `#id`; for an element of a wireframe body (`GEOMETRIC_CURVE_SET`), the
+        /// curve entity itself.
         public let entityID: Int
 
         public init(importID: UUID, bodyID: BodyID, entityID: Int) {
@@ -97,7 +99,7 @@ extension STEP {
         /// its edges could be extracted. `EdgeModel.bounds` is the union over all bodies.
         public let bounds: Bounds?
         /// The name string of the body entity (`MANIFOLD_SOLID_BREP('name', ...)`), as written in
-        /// the file. `nil` when it is `$` or empty. `\X2\...\X0\` style escapes are not decoded.
+        /// the file. `nil` when it is `$` or empty. `\X2\...\X0\` style escapes are decoded.
         public let name: String?
 
         public init(id: BodyID, contextID: Int, unitScaleToMM: Double, unitsAssumed: Bool, uncertaintyMM: Double? = nil,
@@ -124,6 +126,8 @@ extension STEP {
             /// A file polyline, cut to the edge's extent.
             case polyline
             case bspline
+            /// A COMPOSITE_CURVE: its segments joined into one polyline.
+            case composite
         }
 
         /// Analytic description of the curve the polyline samples, where the importer keeps one.
@@ -147,8 +151,9 @@ extension STEP {
         /// Polyline in millimetres, source coordinates. At least two points; `first` and `last`
         /// are the scaled start and end vertices. A closed circle, ellipse or lap has first == last.
         public let points: [SIMD3<Double>]
-        public let startVertexID: Int
-        public let endVertexID: Int
+        /// VERTEX_POINT entity IDs. `nil` for an element of a wireframe body, which has no vertices.
+        public let startVertexID: Int?
+        public let endVertexID: Int?
         /// ADVANCED_FACE / FACE_SURFACE entity IDs that use the edge (sorted, de-duplicated).
         public let adjacentFaceIDs: [Int]
         /// Distance (mm) between the sampled polyline and the true curve: a bound for circles
@@ -161,7 +166,7 @@ extension STEP {
         /// The exact curve behind `points`; see `Curve`.
         public let curve: Curve
 
-        public init(id: EdgeID, kind: CurveKind, points: [SIMD3<Double>], startVertexID: Int, endVertexID: Int,
+        public init(id: EdgeID, kind: CurveKind, points: [SIMD3<Double>], startVertexID: Int?, endVertexID: Int?,
                     adjacentFaceIDs: [Int], chordError: Double = 0, isSeam: Bool = false, curve: Curve = .other) {
             self.id = id
             self.kind = kind

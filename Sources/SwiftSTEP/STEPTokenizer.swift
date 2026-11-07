@@ -69,7 +69,7 @@ struct STEPTokenizer {
                     if position < end && data[position] == 39 {
                         bytes.append(39)
                         position += 1
-                    } else { return .string(String(decoding: bytes, as: UTF8.self)) }
+                    } else { return .string(STEPStringEscapes.decode(String(decoding: bytes, as: UTF8.self))) }
                 } else { bytes.append(current) }
             }
             throw STEP.ParseError("Unterminated string at byte \(start)", kind: .truncated)
@@ -150,5 +150,121 @@ struct STEPTokenizer {
             // Running out of file where something was due means the file was cut short.
             throw STEP.ParseError("Expected \(token) near byte \(position)", kind: found == .end ? .truncated : .malformed)
         }
+    }
+}
+
+/// The control directives of ISO 10303-21 strings (clause 6.4.3), which carry characters outside
+/// basic ASCII: `\\` (a backslash), `\X\hh` (ISO 8859-1), `\S\c` (ISO 8859-1 character, high half),
+/// `\X2\hhhh...\X0\` (UTF-16) and `\X4\hhhhhhhh...\X0\` (UTF-32). `\Pn\` code page selectors are
+/// dropped. Malformed sequences are kept as written rather than failing the import.
+enum STEPStringEscapes {
+    static func decode(_ text: String) -> String {
+        guard text.contains("\\") else { return text }
+        let input = Array(text.unicodeScalars)
+        var output = String.UnicodeScalarView()
+        var index = 0
+
+        func hex(_ range: Range<Int>) -> UInt32? {
+            guard range.upperBound <= input.count else { return nil }
+            var value: UInt32 = 0
+            for i in range {
+                guard let digit = Self.hexValue(input[i]) else { return nil }
+                value = value << 4 | digit
+            }
+            return value
+        }
+        func startsWith(_ marker: String, at position: Int) -> Bool {
+            let scalars = Array(marker.unicodeScalars)
+            guard position + scalars.count <= input.count else { return false }
+            return Array(input[position..<(position + scalars.count)]) == scalars
+        }
+
+        while index < input.count {
+            let scalar = input[index]
+            guard scalar == "\\" else {
+                output.append(scalar)
+                index += 1
+                continue
+            }
+            // \\ is one backslash.
+            if startsWith("\\\\", at: index) {
+                output.append("\\")
+                index += 2
+            // \X2\ ... \X0\ : UTF-16 code units, four hex digits each.
+            } else if startsWith("\\X2\\", at: index), let close = find("\\X0\\", in: input, from: index + 4),
+                      (close - (index + 4)) % 4 == 0 {
+                var units: [UInt16] = []
+                var position = index + 4
+                var valid = true
+                while position < close {
+                    guard let value = hex(position..<(position + 4)) else { valid = false; break }
+                    units.append(UInt16(truncatingIfNeeded: value))
+                    position += 4
+                }
+                if valid {
+                    output.append(contentsOf: String(decoding: units, as: UTF16.self).unicodeScalars)
+                    index = close + 4
+                } else {
+                    output.append(scalar)
+                    index += 1
+                }
+            // \X4\ ... \X0\ : UTF-32, eight hex digits each.
+            } else if startsWith("\\X4\\", at: index), let close = find("\\X0\\", in: input, from: index + 4),
+                      (close - (index + 4)) % 8 == 0 {
+                var scalars: [Unicode.Scalar] = []
+                var position = index + 4
+                var valid = true
+                while position < close {
+                    guard let value = hex(position..<(position + 8)), let character = Unicode.Scalar(value) else {
+                        valid = false
+                        break
+                    }
+                    scalars.append(character)
+                    position += 8
+                }
+                if valid {
+                    output.append(contentsOf: scalars)
+                    index = close + 4
+                } else {
+                    output.append(scalar)
+                    index += 1
+                }
+            // \X\hh : ISO 8859-1.
+            } else if startsWith("\\X\\", at: index), let value = hex((index + 3)..<(index + 5)),
+                      let character = Unicode.Scalar(value) {
+                output.append(character)
+                index += 5
+            // \S\c : the next character with its high bit set.
+            } else if startsWith("\\S\\", at: index), index + 3 < input.count,
+                      let character = Unicode.Scalar(input[index + 3].value + 128) {
+                output.append(character)
+                index += 4
+            // \Pn\ : code page selector, nothing to output.
+            } else if index + 3 < input.count, input[index + 1] == "P", input[index + 3] == "\\" {
+                index += 4
+            } else {
+                output.append(scalar)
+                index += 1
+            }
+        }
+        return String(output)
+    }
+
+    private static func hexValue(_ scalar: Unicode.Scalar) -> UInt32? {
+        switch scalar.value {
+            case 48...57: return scalar.value - 48
+            case 65...70: return scalar.value - 55
+            case 97...102: return scalar.value - 87
+            default: return nil
+        }
+    }
+
+    private static func find(_ marker: String, in input: [Unicode.Scalar], from start: Int) -> Int? {
+        let scalars = Array(marker.unicodeScalars)
+        guard input.count >= scalars.count, start <= input.count - scalars.count else { return nil }
+        for position in start...(input.count - scalars.count) where Array(input[position..<(position + scalars.count)]) == scalars {
+            return position
+        }
+        return nil
     }
 }

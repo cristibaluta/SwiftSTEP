@@ -195,34 +195,149 @@ final class STEPCurveResolver {
     /// start → end runs along `curveID`'s own direction. ORIENTED_EDGE never reaches here.
     func resolve(curveID: Int, startVertexID: Int, endVertexID: Int, sameSense: Bool) throws -> STEPResolvedCurve {
         let (basisID, trimParameters) = try peel(curveID)
+        if file.hasType(basisID, "COMPOSITE_CURVE") {
+            return try fit(try compositeRun(basisID), startVertexID: startVertexID, endVertexID: endVertexID,
+                           sameSense: sameSense)
+        }
+        return try resolve(basisID: basisID, trimParameters: trimParameters,
+                           ends: { try self.edgeEnds(startVertexID, endVertexID, sameSense: sameSense) })
+    }
 
+    /// A curve with no EDGE_CURVE around it (an element of a wireframe set, or a composite
+    /// segment): the ends come from its own trim points or extent. Runs in the curve's direction.
+    func resolveWire(curveID: Int, allowComposite: Bool = true) throws -> STEPResolvedCurve {
+        let (basisID, trimParameters) = try peel(curveID)
+        if file.hasType(basisID, "COMPOSITE_CURVE") {
+            guard allowComposite else { throw STEP.ParseError("Nested composite curve at #\(basisID) is not supported") }
+            return try compositeRun(basisID)
+        }
+        let ends = try wireEnds(basisID, trimParameters)
+        return try resolve(basisID: basisID, trimParameters: trimParameters, ends: { ends })
+    }
+
+    /// Fake vertex IDs for ends that are not vertices; they only tell "same vertex" from "different".
+    private static let wireStartID = -1
+    private static let wireEndID = -2
+
+    private func wireEnds(_ basisID: Int, _ trimParameters: [STEPValue]?) throws -> EdgeEnds {
+        func ends(_ start: SIMD3<Double>, _ end: SIMD3<Double>, closed: Bool = false) -> EdgeEnds {
+            EdgeEnds(startVertexID: Self.wireStartID, endVertexID: closed ? Self.wireStartID : Self.wireEndID,
+                     start: start, end: end, sameSense: true)
+        }
+        if let trimParameters {
+            let trim = try trimSpec(trimParameters)
+            guard let first = trim.first.point, let second = trim.second.point else {
+                throw STEP.ParseError("Unsupported curve: #\(basisID) is trimmed by parameters only, so its ends are not known; edge skipped")
+            }
+            return ends(first, second)
+        }
+        if file.hasType(basisID, "POLYLINE") {
+            let polyline = try polylineGeometry(basisID)
+            return ends(polyline.points[0], polyline.points[polyline.points.count - 1])
+        }
+        if isSpline(basisID) {
+            let spline = try splineGeometry(basisID)
+            return ends(spline.point(at: spline.domain.lowerBound), spline.point(at: spline.domain.upperBound))
+        }
+        if file.hasType(basisID, "CIRCLE") || file.hasType(basisID, "ELLIPSE") {
+            // Untrimmed, a conic is the whole curve.
+            let start = try conicGeometry(basisID).point(at: 0)
+            return ends(start, start, closed: true)
+        }
+        let names = try file.components(basisID).map(\.type).joined(separator: "/")
+        throw STEP.ParseError("Unsupported curve \(names) at #\(basisID) (it has no ends of its own); edge skipped")
+    }
+
+    private func resolve(basisID: Int, trimParameters: [STEPValue]?,
+                         ends: () throws -> EdgeEnds) throws -> STEPResolvedCurve {
         if file.hasType(basisID, "LINE") {
-            // A line is fully determined by its vertices; trims add nothing for display.
-            let points = [try vertex(startVertexID), try vertex(endVertexID)]
+            // A line is fully determined by its end points; trims add nothing for display.
+            let e = try ends()
+            let points = [e.start, e.end]
             guard points[0] != points[1] else { throw STEP.ParseError("Degenerate line edge") }
-            try checkVerticesOnLine(basisID, vertexIDs: (startVertexID, endVertexID), points: (points[0], points[1]))
+            try checkVerticesOnLine(basisID, vertexIDs: (e.startVertexID, e.endVertexID), points: (points[0], points[1]))
             return STEPResolvedCurve(kind: .line, points: points, chordError: 0, warning: nil, curve: .line)
         }
         if file.hasType(basisID, "CIRCLE") || file.hasType(basisID, "ELLIPSE") {
             let conic = try conicGeometry(basisID)
             let trim = try trimParameters.map { try trimSpec($0) }
-            let ends = try edgeEnds(startVertexID, endVertexID, sameSense: sameSense)
-            return try resolveConic(conic, trim: trim, ends: ends)
+            return try resolveConic(conic, trim: trim, ends: try ends())
         }
         if file.hasType(basisID, "POLYLINE") {
             let polyline = try polylineGeometry(basisID)
             let trim = try trimParameters.map { try trimSpec($0) }
-            let ends = try edgeEnds(startVertexID, endVertexID, sameSense: sameSense)
-            return try resolvePolyline(polyline, trim: trim, ends: ends)
+            return try resolvePolyline(polyline, trim: trim, ends: try ends())
         }
-        if file.hasType(basisID, "B_SPLINE_CURVE_WITH_KNOTS") {
+        if isSpline(basisID) {
             let spline = try splineGeometry(basisID)
             let trim = try trimParameters.map { try trimSpec($0) }
-            let ends = try edgeEnds(startVertexID, endVertexID, sameSense: sameSense)
-            return try resolveSpline(spline, trim: trim, ends: ends)
+            return try resolveSpline(spline, trim: trim, ends: try ends())
         }
         let names = try file.components(basisID).map(\.type).joined(separator: "/")
         throw STEP.ParseError("Unsupported curve \(names) at #\(basisID); edge skipped")
+    }
+
+    // MARK: Composite curves
+
+    private static let maximumCompositeSegments = 10_000
+    private static let maximumCompositePoints = 200_000
+
+    /// Joins the segments of a COMPOSITE_CURVE into one polyline running in the curve's direction.
+    /// Each segment is resolved on its own (it needs trim points or a bounded curve), reversed when
+    /// its `same_sense` is false, and must start where the one before it ends.
+    private func compositeRun(_ compositeID: Int) throws -> STEPResolvedCurve {
+        let segmentIDs = try file.parameters(compositeID, type: "COMPOSITE_CURVE").references(at: 1)
+        guard (1...Self.maximumCompositeSegments).contains(segmentIDs.count) else {
+            throw STEP.ParseError("Composite curve #\(compositeID) needs 1...\(Self.maximumCompositeSegments) segments, found \(segmentIDs.count)")
+        }
+        var runs: [[SIMD3<Double>]] = []
+        var total = 0
+        var chordError = 0.0
+        var warning: String?
+        for segmentID in segmentIDs {
+            try Task.checkCancellation()
+            let p = try file.parameters(segmentID, type: "COMPOSITE_CURVE_SEGMENT")
+            guard let sense = try p.argument(1).enumeration, sense == "T" || sense == "F" else {
+                throw STEP.ParseError("Invalid COMPOSITE_CURVE_SEGMENT same_sense at #\(segmentID)")
+            }
+            let resolved = try resolveWire(curveID: try p.reference(at: 2), allowComposite: false)
+            var points = resolved.points
+            if sense == "F" { points.reverse() }
+            if let last = runs.last?.last {
+                guard simd_distance(last, points[0]) <= tolerances.connection else {
+                    throw STEP.ParseError("Composite curve segment #\(segmentID) does not start where the previous one ends")
+                }
+                points[0] = last
+            }
+            total += points.count
+            guard total <= Self.maximumCompositePoints else {
+                throw STEP.ParseError("Composite curve #\(compositeID) has more than \(Self.maximumCompositePoints) points")
+            }
+            runs.append(points)
+            chordError = max(chordError, resolved.chordError)
+            if warning == nil { warning = resolved.warning }
+        }
+        return STEPResolvedCurve(kind: .composite, points: joined(runs), chordError: chordError, warning: warning)
+    }
+
+    /// Orients a composite run for an edge and pins its ends to the edge's vertices.
+    private func fit(_ run: STEPResolvedCurve, startVertexID: Int, endVertexID: Int, sameSense: Bool) throws -> STEPResolvedCurve {
+        var points = run.points
+        if !sameSense { points.reverse() }
+        let start = try vertex(startVertexID)
+        let end = try vertex(endVertexID)
+        let tolerance = boundedTolerance(points)
+        let startOff = simd_distance(points[0], start)
+        guard startOff <= tolerance else {
+            throw STEP.ParseError("Edge start vertex #\(startVertexID) is not on its composite curve (off by \(startOff) mm)")
+        }
+        let endOff = simd_distance(points[points.count - 1], end)
+        guard endOff <= tolerance else {
+            throw STEP.ParseError("Edge end vertex #\(endVertexID) is not on its composite curve (off by \(endOff) mm)")
+        }
+        points[0] = start
+        points[points.count - 1] = end
+        return STEPResolvedCurve(kind: .composite, points: points, chordError: run.chordError, warning: run.warning)
     }
 
     /// Both vertices must lie on the LINE, within the same kind of tolerance the other curves use.
@@ -460,13 +575,47 @@ final class STEPCurveResolver {
         }
     }
 
-    /// Both file layouts: the simple B_SPLINE_CURVE_WITH_KNOTS record, and the complex record
-    /// of B_SPLINE_CURVE + B_SPLINE_CURVE_WITH_KNOTS (+ RATIONAL_B_SPLINE_CURVE for weights).
+    private static let generatedSplineTypes = ["BEZIER_CURVE", "UNIFORM_B_SPLINE_CURVE", "QUASI_UNIFORM_CURVE"]
+
+    private func isSpline(_ id: Int) -> Bool {
+        file.hasType(id, "B_SPLINE_CURVE_WITH_KNOTS") || Self.generatedSplineTypes.contains { file.hasType(id, $0) }
+    }
+
+    /// The knot vector of the three B-spline types that do not list one. Bezier: one span, the
+    /// curve runs through its end control points. Quasi-uniform: clamped ends, evenly spaced
+    /// interior knots. Uniform: evenly spaced knots all along, so the curve starts and ends away
+    /// from its end control points.
+    private static func generatedKnots(_ kind: String, degree: Int, count: Int) throws -> (multiplicities: [Int], knots: [Double]) {
+        guard degree >= 1, count >= degree + 1 else {
+            throw STEP.ParseError("B-spline of degree \(degree) needs at least \(degree + 1) control points, found \(count)")
+        }
+        switch kind {
+            case "BEZIER_CURVE":
+                guard count == degree + 1 else {
+                    throw STEP.ParseError("A Bezier curve of degree \(degree) needs exactly \(degree + 1) control points, found \(count)")
+                }
+                return ([degree + 1, degree + 1], [0, 1])
+            case "UNIFORM_B_SPLINE_CURVE":
+                let total = count + degree + 1
+                return (Array(repeating: 1, count: total), (0..<total).map { Double($0) })
+            default:
+                let spans = count - degree
+                var multiplicities = Array(repeating: 1, count: spans + 1)
+                multiplicities[0] = degree + 1
+                multiplicities[spans] = degree + 1
+                return (multiplicities, (0...spans).map { Double($0) })
+        }
+    }
+
+    /// The file layouts: the simple B_SPLINE_CURVE_WITH_KNOTS record; the complex record of
+    /// B_SPLINE_CURVE + B_SPLINE_CURVE_WITH_KNOTS (+ RATIONAL_B_SPLINE_CURVE for weights); and the
+    /// BEZIER_CURVE, UNIFORM_B_SPLINE_CURVE and QUASI_UNIFORM_CURVE types, simple or complex, whose
+    /// knots are implied.
     private func splineGeometry(_ id: Int) throws -> STEPBSpline {
         let parts = try file.components(id)
         let degree: Int
         let controlIDs: [Int]
-        let multiplicities: [STEPValue]
+        let multiplicities: [Int]
         let knots: [Double]
         var weights: [Double]?
         if let base = parts.first(where: { $0.type == "B_SPLINE_CURVE" }),
@@ -474,19 +623,33 @@ final class STEPCurveResolver {
             degree = try integer(base.parameters.argument(0))
             controlIDs = try base.parameters.references(at: 1)
             guard let list = try withKnots.parameters.argument(0).list else { throw STEP.ParseError("Expected knot multiplicities") }
-            multiplicities = list
+            multiplicities = try list.map { try integer($0) }
             knots = try numbers(withKnots.parameters.argument(1))
-            if let rational = parts.first(where: { $0.type == "RATIONAL_B_SPLINE_CURVE" }) {
-                weights = try numbers(rational.parameters.argument(0))
+        } else if let kind = Self.generatedSplineTypes.first(where: { name in parts.contains { $0.type == name } }) {
+            if let base = parts.first(where: { $0.type == "B_SPLINE_CURVE" }) {
+                degree = try integer(base.parameters.argument(0))
+                controlIDs = try base.parameters.references(at: 1)
+            } else if let simple = parts.first(where: { $0.type == kind }), simple.parameters.count == 6 {
+                degree = try integer(simple.parameters.argument(1))
+                controlIDs = try simple.parameters.references(at: 2)
+            } else {
+                throw STEP.ParseError("Unsupported B-spline layout at #\(id)")
             }
+            guard controlIDs.count <= STEPBSpline.maximumControlPoints else {
+                throw STEP.ParseError("B-spline #\(id) has too many control points")
+            }
+            (multiplicities, knots) = try Self.generatedKnots(kind, degree: degree, count: controlIDs.count)
         } else if let simple = parts.first(where: { $0.type == "B_SPLINE_CURVE_WITH_KNOTS" }), simple.parameters.count == 9 {
             degree = try integer(simple.parameters.argument(1))
             controlIDs = try simple.parameters.references(at: 2)
             guard let list = try simple.parameters.argument(6).list else { throw STEP.ParseError("Expected knot multiplicities") }
-            multiplicities = list
+            multiplicities = try list.map { try integer($0) }
             knots = try numbers(simple.parameters.argument(7))
         } else {
             throw STEP.ParseError("Unsupported B-spline layout at #\(id)")
+        }
+        if let rational = parts.first(where: { $0.type == "RATIONAL_B_SPLINE_CURVE" }) {
+            weights = try numbers(rational.parameters.argument(0))
         }
         guard controlIDs.count <= STEPBSpline.maximumControlPoints else {
             throw STEP.ParseError("B-spline #\(id) has too many control points")
@@ -494,7 +657,7 @@ final class STEPCurveResolver {
         return try STEPBSpline(degree: degree,
                                controlPoints: try controlIDs.map { try cartesianPoint($0) },
                                weights: weights,
-                               multiplicities: try multiplicities.map { try integer($0) },
+                               multiplicities: multiplicities,
                                knotValues: knots)
     }
 

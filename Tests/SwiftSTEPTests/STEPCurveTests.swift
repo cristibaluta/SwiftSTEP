@@ -156,7 +156,19 @@ private final class StepBuilder {
         let context = addContext()
         add("ADVANCED_BREP_SHAPE_REPRESENTATION('',(\(solids.map { "#\($0)" }.joined(separator: ","))),#\(context))")
 
-        return Data(("ISO-10303-21;\nHEADER;\nFILE_DESCRIPTION(('curve test'),'2;1');\n"
+        return document()
+    }
+
+    /// A wireframe body: a GEOMETRIC_CURVE_SET of the given curve (and point) entities.
+    func wireData(elements: [Int], name: String = "") -> Data {
+        let set = add("GEOMETRIC_CURVE_SET('\(name)',(\(elements.map { "#\($0)" }.joined(separator: ","))))")
+        let context = addContext()
+        add("GEOMETRICALLY_BOUNDED_WIREFRAME_SHAPE_REPRESENTATION('',(#\(set)),#\(context))")
+        return document()
+    }
+
+    private func document() -> Data {
+        Data(("ISO-10303-21;\nHEADER;\nFILE_DESCRIPTION(('curve test'),'2;1');\n"
             + "FILE_NAME('t.step','2026-01-01T00:00:00',(''),(''),'','','');\n"
             + "FILE_SCHEMA(('AUTOMOTIVE_DESIGN'));\nENDSEC;\nDATA;\n"
             + lines.joined(separator: "\n")
@@ -1051,7 +1063,10 @@ struct STEPPhase1Tests {
 
         let assembly = text(lineFile())
             .replacingOccurrences(of: "\nENDSEC;\nEND-ISO", with: "\n#9999=MAPPED_ITEM('',#1,#1);\nENDSEC;\nEND-ISO")
-        #expect(kind(of: Data(assembly.utf8)) == .assembly)
+        // T42: assemblies no longer throw; they import, untransformed, with a warning.
+        let imported = try? parse(Data(assembly.utf8))
+        #expect(imported?.edges.count == 1)
+        #expect(imported?.diagnostics.contains { $0.code == "assembly-untransformed" && $0.severity == .warning } == true)
 
         #expect(kind(of: lineFile(), STEP.Options(chordToleranceMM: -1)) == .invalidOptions)
         #expect(kind(of: lineFile(), STEP.Options(maximumEntityCount: 3)) == .limitExceeded)
@@ -1489,5 +1504,230 @@ struct STEPPhase2Tests {
         let listed = try #require(topology.faces.first)
         #expect(listed.loops.isEmpty && listed.outerLoopIndex == nil)
         #expect(topology.diagnostics.contains { $0.code == "face-loops-unreadable" })
+    }
+}
+
+// MARK: - Phase 4: format coverage
+
+/// A B-spline curve of one of the knot-less types, as a simple record or the complex one.
+private func knotlessSpline(_ b: StepBuilder, type: String, degree: Int, points: [SIMD3<Double>], complex: Bool) -> Int {
+    let refs = points.map { "#\(b.point($0))" }.joined(separator: ",")
+    if complex {
+        return b.add("( BOUNDED_CURVE() B_SPLINE_CURVE(\(degree),(\(refs)),.UNSPECIFIED.,.F.,.F.) \(type)() CURVE() "
+                     + "GEOMETRIC_REPRESENTATION_ITEM() REPRESENTATION_ITEM('') )")
+    }
+    return b.add("\(type)('',\(degree),(\(refs)),.UNSPECIFIED.,.F.,.F.)")
+}
+
+/// Gzip around a deflate stream; the CRC is left zero because the reader does not check it.
+private func gzipped(_ data: Data, declaredSize: UInt32? = nil) throws -> Data {
+    var out = Data([0x1F, 0x8B, 8, 0, 0, 0, 0, 0, 0, 0xFF])
+    out.append(try (data as NSData).compressed(using: .zlib) as Data)
+    out.append(contentsOf: [0, 0, 0, 0])
+    let size = declaredSize ?? UInt32(truncatingIfNeeded: data.count)
+    out.append(contentsOf: (0..<4).map { UInt8(truncatingIfNeeded: size >> UInt32(8 * $0)) })
+    return out
+}
+
+@Suite("STEP format coverage")
+struct STEPPhase4Tests {
+
+    // MARK: T40
+
+    @Test(arguments: [false, true])
+    func bezierCurveMatchesTheBernsteinForm(complex: Bool) throws {
+        let data = singleEdge(start: bezierPoints[0], end: bezierPoints[3]) {
+            knotlessSpline($0, type: "BEZIER_CURVE", degree: 3, points: bezierPoints, complex: complex)
+        }
+        let model = try parse(data)
+        let edge = try #require(model.edges.first)
+        #expect(edge.kind == .bspline && model.diagnostics.isEmpty)
+        #expect(near(edge.points.first!, bezierPoints[0]) && near(edge.points.last!, bezierPoints[3]))
+        #expect(deviation(of: edge.points, from: bezier, over: 0...1) <= 0.01 + 1e-6)
+    }
+
+    @Test func quasiUniformCurveIsClampedWithEvenInteriorKnots() throws {
+        let data = singleEdge(start: bezierPoints[0], end: bezierPoints[3]) {
+            knotlessSpline($0, type: "QUASI_UNIFORM_CURVE", degree: 2, points: bezierPoints, complex: false)
+        }
+        let edge = try #require(try parse(data).edges.first)
+        let reference = try STEPBSpline(degree: 2, controlPoints: bezierPoints, weights: nil,
+                                        multiplicities: [3, 1, 3], knotValues: [0, 1, 2])
+        let projector = STEPBSplineProjector(reference)
+        #expect(edge.points.allSatisfy { projector.closest(to: $0).distance < 1e-6 })
+        #expect(near(edge.points.first!, bezierPoints[0]) && near(edge.points.last!, bezierPoints[3]))
+    }
+
+    @Test func uniformCurveStartsAndEndsAwayFromItsEndControlPoints() throws {
+        let reference = try STEPBSpline(degree: 2, controlPoints: bezierPoints, weights: nil,
+                                        multiplicities: Array(repeating: 1, count: 7),
+                                        knotValues: (0..<7).map { Double($0) })
+        let start = reference.point(at: reference.domain.lowerBound)
+        let end = reference.point(at: reference.domain.upperBound)
+        #expect(!near(start, bezierPoints[0], 1e-3), "an unclamped curve does not touch its first control point")
+        let data = singleEdge(start: start, end: end) {
+            knotlessSpline($0, type: "UNIFORM_B_SPLINE_CURVE", degree: 2, points: bezierPoints, complex: true)
+        }
+        let edge = try #require(try parse(data).edges.first)
+        let projector = STEPBSplineProjector(reference)
+        #expect(edge.points.allSatisfy { projector.closest(to: $0).distance < 1e-6 })
+        #expect(near(edge.points.first!, start) && near(edge.points.last!, end))
+    }
+
+    @Test func aBezierCurveWithTheWrongPointCountIsSkippedWithAReason() throws {
+        let points = bezierPoints + [SIMD3(50, 10, 0)]
+        let model = try parse(singleEdge(start: points[0], end: points[4]) {
+            knotlessSpline($0, type: "BEZIER_CURVE", degree: 3, points: points, complex: false)
+        })
+        #expect(model.edges.isEmpty)
+        #expect(model.diagnostics.contains { $0.severity == .skipped && $0.message.contains("Bezier") })
+    }
+
+    // MARK: T41
+
+    private func compositeFile(_ b: StepBuilder, secondStart: SIMD3<Double> = SIMD3(10, 0, 0),
+                               edgeStart: SIMD3<Double> = .zero, edgeEnd: SIMD3<Double>,
+                               edgeSameSense: Bool = true) -> Data {
+        func trimmedLine(_ from: SIMD3<Double>, _ to: SIMD3<Double>) -> Int {
+            let line = b.line(from: from, direction: simd_normalize(to - from))
+            return b.trimmed(basis: line, first: "(#\(b.point(from)))", second: "(#\(b.point(to)))",
+                             senseAgreement: true, master: "CARTESIAN")
+        }
+        func segment(_ curve: Int, sameSense: Bool) -> Int {
+            b.add("COMPOSITE_CURVE_SEGMENT(.CONTINUOUS.,.\(sameSense ? "T" : "F").,#\(curve))")
+        }
+        let first = segment(trimmedLine(.zero, SIMD3(10, 0, 0)), sameSense: true)
+        // Written from its far end with same_sense false: it still runs (10,0,0) → (10,10,0).
+        let second = secondStart == SIMD3(10, 0, 0)
+            ? segment(trimmedLine(SIMD3(10, 10, 0), secondStart), sameSense: false)
+            : segment(trimmedLine(secondStart, SIMD3(secondStart.x, 10, 0)), sameSense: true)
+        let composite = b.add("COMPOSITE_CURVE('',(#\(first),#\(second)),.F.)")
+        let edge = b.edge(start: b.vertex(edgeStart), end: b.vertex(edgeEnd), curve: composite, sameSense: edgeSameSense)
+        return b.data(loops: [[StepBuilder.fwd(edge)]])
+    }
+
+    @Test func twoSegmentCompositeEdgeIsOnePolyline() throws {
+        let b = StepBuilder()
+        let model = try parse(compositeFile(b, edgeEnd: SIMD3(10, 10, 0)))
+        let edge = try #require(model.edges.first)
+        #expect(model.edges.count == 1 && model.diagnostics.isEmpty)
+        #expect(edge.kind == .composite)
+        #expect(edge.points == [SIMD3(0, 0, 0), SIMD3(10, 0, 0), SIMD3(10, 10, 0)])
+    }
+
+    @Test func aCompositeEdgeWithSameSenseFalseRunsBackwards() throws {
+        let b = StepBuilder()
+        let model = try parse(compositeFile(b, edgeStart: SIMD3(10, 10, 0), edgeEnd: .zero, edgeSameSense: false))
+        #expect(try #require(model.edges.first).points == [SIMD3(10, 10, 0), SIMD3(10, 0, 0), SIMD3(0, 0, 0)])
+    }
+
+    @Test func disconnectedSegmentsAreRefusedNotBridged() throws {
+        let b = StepBuilder()
+        let model = try parse(compositeFile(b, secondStart: SIMD3(20, 0, 0), edgeEnd: SIMD3(20, 10, 0)))
+        #expect(model.edges.isEmpty)
+        #expect(model.diagnostics.contains { $0.message.contains("does not start where the previous one ends") })
+    }
+
+    @Test func compositeEndsMustMatchTheEdgeVertices() throws {
+        let b = StepBuilder()
+        let model = try parse(compositeFile(b, edgeEnd: SIMD3(10, 12, 0)))
+        #expect(model.edges.isEmpty)
+        #expect(model.diagnostics.contains { $0.code == "vertex-off-curve" })
+    }
+
+    // MARK: T42
+
+    @Test func aMappedItemImportsWithAWarning() throws {
+        let data = singleEdge(start: .zero, end: SIMD3(10, 0, 0)) { $0.line(from: .zero, direction: SIMD3(1, 0, 0)) }
+        let text = String(decoding: data, as: UTF8.self)
+            .replacingOccurrences(of: "\nENDSEC;\nEND-ISO", with: "\n#9999=MAPPED_ITEM('',#1,#1);\nENDSEC;\nEND-ISO")
+        let model = try parse(Data(text.utf8))
+        #expect(model.edges.count == 1)
+        let note = try #require(model.diagnostics.first { $0.code == "assembly-untransformed" })
+        #expect(note.severity == .warning && note.entityID == 9999)
+    }
+
+    // MARK: T44
+
+    @Test func aWireOnlyFileReturnsItsCurvesAsEdges() throws {
+        let b = StepBuilder()
+        let line = b.trimmed(basis: b.line(from: .zero, direction: SIMD3(1, 0, 0)), first: "(#\(b.point(.zero)))",
+                             second: "(#\(b.point(SIMD3(10, 0, 0))))", senseAgreement: true, master: "CARTESIAN")
+        let polyline = b.polyline([SIMD3(0, 0, 0), SIMD3(5, 5, 0), SIMD3(10, 0, 0)])
+        let arc = b.trimmed(basis: b.circle(placement: b.placement(origin: .zero), radius: 5),
+                            first: "(#\(b.point(SIMD3(5, 0, 0))))", second: "(#\(b.point(SIMD3(0, 5, 0))))",
+                            senseAgreement: true, master: "CARTESIAN")
+        let data = b.wireData(elements: [line, polyline, arc, b.point(SIMD3(1, 1, 1))], name: "Outline")
+        let model = try parse(data)
+
+        #expect(model.bodies.count == 1 && model.bodies[0].name == "Outline")
+        #expect(model.edges.count == 3 && model.skippedEdgeCount == 0, "the point is not an edge")
+        #expect(model.edges.map(\.kind) == [.line, .polyline, .arc])
+        #expect(model.edges.allSatisfy { $0.startVertexID == nil && $0.endVertexID == nil && $0.adjacentFaceIDs.isEmpty })
+        #expect(model.edges.map(\.id.entityID) == [line, polyline, arc])
+        let bounds = try #require(model.bodies[0].bounds)
+        #expect(near(bounds.min, .zero) && near(bounds.max, SIMD3(10, 5, 0), 1e-6))
+
+        // A wire has no faces: neither the tessellator nor the topology reader complain.
+        let geometry = try STEP.readGeometry(data: data)
+        #expect(geometry.surfaces.diagnostics.isEmpty && geometry.surfaces.unsurfacedBodies.isEmpty)
+        let topology = try STEP.readTopology(data: data)
+        #expect(topology.faces.isEmpty && topology.diagnostics.isEmpty)
+    }
+
+    @Test func aBareCircleInACurveSetIsAFullCircle() throws {
+        let b = StepBuilder()
+        let circle = b.circle(placement: b.placement(origin: .zero), radius: 5)
+        let model = try parse(b.wireData(elements: [circle]))
+        let edge = try #require(model.edges.first)
+        #expect(edge.kind == .circle && near(edge.points.first!, edge.points.last!))
+    }
+
+    @Test func anUntrimmedLineHasNoEndsAndIsSkippedWithAReason() throws {
+        let b = StepBuilder()
+        let model = try parse(b.wireData(elements: [b.line(from: .zero, direction: SIMD3(1, 0, 0))]))
+        #expect(model.edges.isEmpty && model.diagnostics.contains { $0.code == "unsupported-curve" })
+    }
+
+    // MARK: T45
+
+    @Test func aGzippedFileParsesLikeThePlainOne() throws {
+        let plain = singleEdge(start: .zero, end: SIMD3(10, 0, 0)) { $0.line(from: .zero, direction: SIMD3(1, 0, 0)) }
+        let packed = try gzipped(plain)
+        #expect(STEPGzip.isGzip(packed) && !STEPGzip.isGzip(plain))
+        let model = try parse(packed)
+        #expect(model.edges.count == 1 && model.header.name == "t.step")
+        #expect(try STEP.readGeometry(data: packed).edges.edges.count == 1)
+    }
+
+    @Test func brokenGzipIsRefusedWithAnError() throws {
+        let plain = singleEdge(start: .zero, end: SIMD3(10, 0, 0)) { $0.line(from: .zero, direction: SIMD3(1, 0, 0)) }
+        let packed = try gzipped(plain)
+        #expect(throws: STEP.ParseError.self) { try parse(packed.prefix(15)) }
+        // A trailer that lies about the size.
+        #expect(throws: STEP.ParseError.self) { try parse(try gzipped(plain, declaredSize: 7)) }
+        // A declared size above the cap is refused before inflating.
+        #expect(throws: STEP.ParseError.self) { try parse(try gzipped(plain, declaredSize: UInt32.max)) }
+    }
+
+    // MARK: T46
+
+    @Test func stringEscapesAreDecoded() {
+        #expect(STEPStringEscapes.decode("Gr\\X2\\00FC\\X0\\n") == "Grün")
+        #expect(STEPStringEscapes.decode("\\X\\E9t\\X\\E9") == "été")
+        #expect(STEPStringEscapes.decode("caf\\S\\i") == "café")
+        #expect(STEPStringEscapes.decode("\\X4\\0001F600\\X0\\") == "😀")
+        #expect(STEPStringEscapes.decode("a\\\\b") == "a\\b")
+        #expect(STEPStringEscapes.decode("\\PA\\x") == "x")
+        #expect(STEPStringEscapes.decode("plain") == "plain")
+        // Malformed directives are kept as written.
+        let broken = "bad\\X2\\00F\\X0\\"
+        #expect(STEPStringEscapes.decode(broken) == broken)
+    }
+
+    @Test func anEscapedNameIsDecodedInTheModel() throws {
+        let b = StepBuilder()
+        let model = try parse(b.data(bodies: [boxBody(b, name: "Gr\\X2\\00FC\\X0\\n")]))
+        #expect(model.bodies.first?.name == "Grün")
     }
 }

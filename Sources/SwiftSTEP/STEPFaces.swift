@@ -19,6 +19,9 @@ final class STEPFaceReader {
         self.chordTolerance = chordTolerance
     }
 
+    /// A wireframe body (`GEOMETRIC_CURVE_SET`) has curves and no faces.
+    func isWireframe(_ bodyID: Int) -> Bool { file.hasType(bodyID, "GEOMETRIC_CURVE_SET") }
+
     /// The STEP type name of a surface entity, for messages ("CYLINDRICAL_SURFACE", "SURFACE_OF_REVOLUTION").
     func surfaceTypeName(_ id: Int) -> String? {
         guard let components = try? file.components(id) else { return nil }
@@ -354,6 +357,7 @@ final class STEPTopologyExtractor {
     }
 
     private func read(body: STEP.BodyInfo) throws {
+        if reader.isWireframe(body.id.entityID) { return }
         let faceList: [(id: Int, flipped: Bool)]
         do {
             faceList = try reader.collectFaces(bodyID: body.id.entityID)

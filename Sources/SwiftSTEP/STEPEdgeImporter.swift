@@ -2,9 +2,14 @@ import Foundation
 
 /// Internal drivers behind the public `STEP.read…` / `STEP.load…` entry points.
 enum STEPEdgeImporter {
+    /// Inflates gzip data (`.stpz`), then indexes the file.
+    private static func openFile(_ data: Data, _ options: STEP.Options) throws -> STEPFile {
+        try STEPFile(data: try STEPGzip.inflateIfGzip(data), maximumEntityCount: options.maximumEntityCount)
+    }
+
     static func parse(data: Data, importID: UUID = UUID(), options: STEP.Options = STEP.Options()) throws -> STEP.EdgeModel {
         try Task.checkCancellation()
-        let file = try STEPFile(data: data, maximumEntityCount: options.maximumEntityCount)
+        let file = try openFile(data, options)
         return try STEPEdgeExtractor(file: file, importID: importID, options: options).extract()
     }
 
@@ -12,7 +17,7 @@ enum STEPEdgeImporter {
     /// once and shares it between both stages. Synchronous: call it from a background task.
     static func parseGeometry(data: Data, importID: UUID = UUID(), options: STEP.Options = STEP.Options()) throws -> STEP.Geometry {
         try Task.checkCancellation()
-        let file = try STEPFile(data: data, maximumEntityCount: options.maximumEntityCount)
+        let file = try openFile(data, options)
         let edges = try STEPEdgeExtractor(file: file, importID: importID, options: options).extract()
         // Surfaces only add hidden-edge display: if they cannot be built the wireframe still loads.
         // Cancellation is not a failure to degrade from, so it propagates.
@@ -32,7 +37,7 @@ enum STEPEdgeImporter {
     /// file once and shares it between both stages. Synchronous: call it from a background task.
     static func parseTopology(data: Data, importID: UUID = UUID(), options: STEP.Options = STEP.Options()) throws -> STEP.Topology {
         try Task.checkCancellation()
-        let file = try STEPFile(data: data, maximumEntityCount: options.maximumEntityCount)
+        let file = try openFile(data, options)
         let edges = try STEPEdgeExtractor(file: file, importID: importID, options: options).extract()
         return try STEPTopologyExtractor(file: file, model: edges, options: options).extract()
     }

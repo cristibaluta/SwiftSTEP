@@ -9,11 +9,13 @@ final class STEPEdgeExtractor {
         "SHAPE_REPRESENTATION",
         "ADVANCED_BREP_SHAPE_REPRESENTATION",
         "MANIFOLD_SURFACE_SHAPE_REPRESENTATION",
-        "GEOMETRICALLY_BOUNDED_SURFACE_SHAPE_REPRESENTATION"
+        "GEOMETRICALLY_BOUNDED_SURFACE_SHAPE_REPRESENTATION",
+        "GEOMETRICALLY_BOUNDED_WIREFRAME_SHAPE_REPRESENTATION"
     ]
     private static let bodyTypes: Set<String> = ["MANIFOLD_SOLID_BREP",
                                                  "BREP_WITH_VOIDS",
-                                                 "SHELL_BASED_SURFACE_MODEL"]
+                                                 "SHELL_BASED_SURFACE_MODEL",
+                                                 "GEOMETRIC_CURVE_SET"]
 
     init(file: STEPFile, importID: UUID, options: STEP.Options) {
         self.file = file
@@ -33,8 +35,10 @@ final class STEPEdgeExtractor {
         let assemblies = file.entities(ofTypes: ["MAPPED_ITEM",
                                                  "NEXT_ASSEMBLY_USAGE_OCCURRENCE",
                                                  "REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION"])
-        guard assemblies.isEmpty else {
-            throw STEP.ParseError("Assembly placement is not supported yet (entity #\(assemblies[0]))", kind: .assembly)
+        if let first = assemblies.first {
+            // Placements are not applied yet: each body is imported once, where its own file puts it.
+            diagnose(first, "The file places part instances (\(assemblies.count) assembly entities); their transforms are not applied, so bodies are imported untransformed",
+                     .warning, code: "assembly-untransformed")
         }
         model.indexedEntityCount = file.index.count
 
@@ -75,17 +79,30 @@ final class STEPEdgeExtractor {
                                              angleScaleToRadians: { try self.angleScale(context: contextID) })
             for bodyID in bodyIDs {
                 let identity = STEP.BodyID(representationID: representationID, entityID: bodyID)
-                let uses = try collectEdges(bodyID: bodyID)
+                // A wireframe body is a bare set of curves; everything else is walked down to its edges.
+                let isWire = file.hasType(bodyID, "GEOMETRIC_CURVE_SET")
+                var uses: [Int: [Int: Int]] = [:]
+                if isWire {
+                    do {
+                        for curveID in try wireElements(bodyID) { uses[curveID] = [:] }
+                    } catch let error as STEP.ParseError {
+                        diagnose(bodyID, error.description, .skipped, code: "unsupported-topology")
+                    }
+                } else {
+                    uses = try collectEdges(bodyID: bodyID)
+                }
                 model.reachableEdgeCount += uses.count
                 var bodyBounds: STEP.Bounds?
                 for edgeID in uses.keys.sorted() {
                     try Task.checkCancellation()
                     let faceUses = uses[edgeID]!
                     do {
-                        let edge = try edge(edgeID, body: identity, resolver: resolver, faces: faceUses.keys.sorted(),
-                                            isSeam: faceUses.values.contains { $0 >= 2 })
-                        model.edges.append(edge)
-                        for point in edge.points {
+                        let built = try isWire
+                            ? wireEdge(edgeID, body: identity, resolver: resolver)
+                            : edge(edgeID, body: identity, resolver: resolver, faces: faceUses.keys.sorted(),
+                                   isSeam: faceUses.values.contains { $0 >= 2 })
+                        model.edges.append(built)
+                        for point in built.points {
                             if bodyBounds == nil { bodyBounds = STEP.Bounds(min: point, max: point) }
                             else { bodyBounds?.include(point) }
                         }
@@ -181,6 +198,27 @@ final class STEPEdgeExtractor {
         }
         try walk(bodyID, face: nil, ancestors: [])
         return uses
+    }
+
+    /// The curves of a GEOMETRIC_CURVE_SET, sorted. Points in the set are not edges and are left out.
+    private func wireElements(_ bodyID: Int) throws -> [Int] {
+        let ids = try file.parameters(bodyID, type: "GEOMETRIC_CURVE_SET").references(at: 1)
+        return Array(Set(ids.filter { !file.hasType($0, "CARTESIAN_POINT") })).sorted()
+    }
+
+    /// One curve of a wireframe body as an edge: no vertices, no faces.
+    private func wireEdge(_ id: Int, body: STEP.BodyID, resolver: STEPCurveResolver) throws -> STEP.Edge {
+        let resolved = try resolver.resolveWire(curveID: id)
+        if let warning = resolved.warning { diagnose(id, warning, .warning, code: "chord-cap") }
+        return STEP.Edge(id: STEP.EdgeID(importID: model.importID, bodyID: body, entityID: id),
+                        kind: resolved.kind,
+                        points: resolved.points,
+                        startVertexID: nil,
+                        endVertexID: nil,
+                        adjacentFaceIDs: [],
+                        chordError: resolved.chordError,
+                        isSeam: false,
+                        curve: resolved.curve)
     }
 
     /// The name string of a body entity (its first parameter), or `nil` when it is `$` or empty.

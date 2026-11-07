@@ -126,7 +126,7 @@ Each task is small and self-contained, so it can be done in one short session.
 - Files: `STEPEdgeExtractor.swift`, `Model.swift`
 - Do: read the name string of the body entity and expose it as `BodyInfo.name`.
 - Done when: a fixture with a named brep returns the name.
-- Status: done. `BodyInfo.name` is the body entity's first parameter (`nil` when `$` or empty), not decoded until T46. Complex-record bodies are not supported by the extractor at all, so only the plain record is read. Test: `bodyNamesAreRead` (including a `BREP_WITH_VOIDS`). Not built or run (no Swift toolchain here): run `swift test`.
+- Status: done. `BodyInfo.name` is the body entity's first parameter (`nil` when `$` or empty). Complex-record bodies are not supported by the extractor at all, so only the plain record is read. Test: `bodyNamesAreRead` (including a `BREP_WITH_VOIDS`). Not built or run (no Swift toolchain here): run `swift test`.
 
 ### T24. Face topology output, step 1: faces without tessellation (M) — DONE
 - Files: new `STEPFaces.swift`, `Model.swift`
@@ -191,20 +191,23 @@ Each task is small and self-contained, so it can be done in one short session.
 
 ## Phase 4: format coverage
 
-### T40. Simple B-spline curve types (S)
+### T40. Simple B-spline curve types (S) — DONE
 - Files: `STEPCurves.swift`, `STEPBSpline.swift`
 - Do: support `BEZIER_CURVE`, `UNIFORM_B_SPLINE_CURVE`, `QUASI_UNIFORM_CURVE` by generating the knot vector, then reuse the existing evaluator.
 - Done when: a Bezier fixture matches the Bernstein test.
+- Status: done. Simple and complex records of the three types; knots are generated (Bezier needs exactly degree + 1 points). Tests: `bezierCurveMatchesTheBernsteinForm`, `quasiUniformCurveIsClampedWithEvenInteriorKnots`, `uniformCurveStartsAndEndsAwayFromItsEndControlPoints`, `aBezierCurveWithTheWrongPointCountIsSkippedWithAReason`. Not built or run (no Swift toolchain here): run `swift test`.
 
-### T41. `COMPOSITE_CURVE` (M)
+### T41. `COMPOSITE_CURVE` (M) — DONE
 - Files: `STEPCurves.swift`
 - Do: resolve each `COMPOSITE_CURVE_SEGMENT` through the existing resolver and join the runs, honouring `same_sense`.
 - Done when: a two-segment composite edge returns one polyline.
+- Status: done. `Edge.CurveKind.composite`. A segment needs trim points (cartesian) or a bounded curve (polyline, B-spline); parameter-only trims, untrimmed lines and nested composites are skipped with a reason. Segments must meet within the connection tolerance. Tests in `STEPPhase4Tests`: two segments, `same_sense` false, reversed edge, gap, vertex mismatch. Not built or run (no Swift toolchain here): run `swift test`.
 
-### T42. Assemblies, step 1: don't throw (S)
+### T42. Assemblies, step 1: don't throw (S) — DONE
 - Files: `STEPEdgeExtractor.swift`
 - Do: replace the assembly throw with a diagnostic. Import the bodies untransformed.
 - Done when: a fixture with a `MAPPED_ITEM` imports with a warning.
+- Status: done. The throw became an `assembly-untransformed` warning; `ParseError.Kind.assembly` stays but is no longer thrown. `fileLevelErrorsCarryAKind` updated; test `aMappedItemImportsWithAWarning`. Not built or run (no Swift toolchain here): run `swift test`.
 
 ### T43. Assemblies, step 2: transforms (L, split)
 - Split into:
@@ -213,20 +216,23 @@ Each task is small and self-contained, so it can be done in one short session.
   3. T43c: apply the matrices and extend `BodyID` with the instance path.
 - Done when: a two-instance fixture yields two bodies at different positions.
 
-### T44. Wireframe bodies (M)
+### T44. Wireframe bodies (M) — DONE
 - Files: `STEPEdgeExtractor.swift`, `Model.swift`
 - Do: accept `GEOMETRIC_CURVE_SET` items (trimmed curves, polylines). Make `startVertexID` and `endVertexID` optional.
 - Done when: a wire-only fixture returns edges.
+- Status: done. `GEOMETRIC_CURVE_SET` bodies (also in `GEOMETRICALLY_BOUNDED_WIREFRAME_SHAPE_REPRESENTATION`); `Edge.startVertexID`/`endVertexID` are now `Int?`, which changes the type for existing callers. The tessellator and `readTopology` skip wire bodies silently. Tests: `aWireOnlyFileReturnsItsCurvesAsEdges`, `aBareCircleInACurveSetIsAFullCircle`, `anUntrimmedLineHasNoEndsAndIsSkippedWithAReason`. Not built or run (no Swift toolchain here): run `swift test`.
 
-### T45. Compressed `.stpz` (S)
+### T45. Compressed `.stpz` (S) — DONE
 - Files: `STEP.swift`
 - Do: if the data starts with the gzip magic bytes, inflate before parsing (Compression framework).
 - Done when: a gzipped fixture parses.
+- Status: done. `STEPGzip.inflateIfGzip` (header parsed by hand, deflate via `NSData.decompressed(using: .zlib)`), used by every entry point. The trailer CRC is not verified; the declared size is capped at 1 GiB and checked again afterwards, but a stream that lies about its size is only caught after inflating. Non-Apple platforms throw. Tests: `aGzippedFileParsesLikeThePlainOne`, `brokenGzipIsRefusedWithAnError`. Not built or run (no Swift toolchain here): run `swift test`.
 
-### T46. String escapes (S)
+### T46. String escapes (S) — DONE
 - Files: `STEPTokenizer.swift`
 - Do: decode `\X2\…\X0\`, `\X\` and `\S\` in strings. Only matters once names are exposed (T23).
 - Done when: a fixture with an escaped name decodes correctly.
+- Status: done. `STEPStringEscapes.decode` in the tokenizer: `\X2\`, `\X4\`, `\X\hh`, `\S\c`, `\\`; `\Pn\` dropped; malformed sequences kept as written. Tests: `stringEscapesAreDecoded`, `anEscapedNameIsDecodedInTheModel`. Not built or run (no Swift toolchain here): run `swift test`.
 
 ---
 

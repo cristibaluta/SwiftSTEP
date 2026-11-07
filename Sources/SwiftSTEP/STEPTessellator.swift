@@ -68,6 +68,7 @@ final class STEPTessellator {
     // MARK: Bodies
 
     private func tessellate(body: STEP.BodyInfo, edges: [STEP.Edge]) throws {
+        if reader.isWireframe(body.id.entityID) { return }
         tolerances = STEPTolerances(chord: tolerance, declaredUncertainty: body.uncertaintyMM)
         let faces: [(id: Int, flipped: Bool)]
         do {
