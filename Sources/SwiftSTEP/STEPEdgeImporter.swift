@@ -28,6 +28,15 @@ enum STEPEdgeImporter {
         return STEP.Geometry(edges: edges, surfaces: surfaces)
     }
 
+    /// Edges plus the faces of every body (surface and boundary loops, no triangles). Parses the
+    /// file once and shares it between both stages. Synchronous: call it from a background task.
+    static func parseTopology(data: Data, importID: UUID = UUID(), options: STEP.Options = STEP.Options()) throws -> STEP.Topology {
+        try Task.checkCancellation()
+        let file = try STEPFile(data: data, maximumEntityCount: options.maximumEntityCount)
+        let edges = try STEPEdgeExtractor(file: file, importID: importID, options: options).extract()
+        return try STEPTopologyExtractor(file: file, model: edges, options: options).extract()
+    }
+
     /// Runs `work` on a detached task so it never inherits an actor, and forwards cancellation.
     /// The parser and its cache are created inside the worker and never cross actors.
     static func detached<T: Sendable>(_ work: @escaping @Sendable () throws -> T) async throws -> T {

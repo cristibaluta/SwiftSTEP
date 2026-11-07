@@ -33,6 +33,16 @@ public enum STEP {
         try readGeometry(data: Data(contentsOf: url, options: .mappedIfSafe), importID: importID, options: options)
     }
 
+    /// Edges plus the faces of every body: surface, sense and boundary loops, without triangles.
+    /// A face whose surface SwiftSTEP cannot read is still listed, with `surface == nil`.
+    public static func readTopology(data: Data, importID: UUID = UUID(), options: Options = Options()) throws -> Topology {
+        try STEPEdgeImporter.parseTopology(data: data, importID: importID, options: options)
+    }
+
+    public static func readTopology(contentsOf url: URL, importID: UUID = UUID(), options: Options = Options()) throws -> Topology {
+        try readTopology(data: Data(contentsOf: url, options: .mappedIfSafe), importID: importID, options: options)
+    }
+
     // MARK: Asynchronous (detached worker, cancellable)
 
     public static func load(contentsOf url: URL, importID: UUID = UUID(), options: Options = Options()) async throws -> EdgeModel {
@@ -41,5 +51,9 @@ public enum STEP {
 
     public static func loadGeometry(contentsOf url: URL, importID: UUID = UUID(), options: Options = Options()) async throws -> Geometry {
         try await STEPEdgeImporter.detached { try readGeometry(contentsOf: url, importID: importID, options: options) }
+    }
+
+    public static func loadTopology(contentsOf url: URL, importID: UUID = UUID(), options: Options = Options()) async throws -> Topology {
+        try await STEPEdgeImporter.detached { try readTopology(contentsOf: url, importID: importID, options: options) }
     }
 }

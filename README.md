@@ -22,7 +22,8 @@ geometry, read assemblies or produce machining contours.
 | --- | --- |
 | `STEP.read(data:importID:options:)` / `read(contentsOf:…)` | `STEP.EdgeModel` (synchronous) |
 | `STEP.readGeometry(data:…)` / `readGeometry(contentsOf:…)` | `STEP.Geometry`: `edges` plus `surfaces` (synchronous) |
-| `STEP.load(contentsOf:…)` / `loadGeometry(contentsOf:…)` | Same, `async`: detached worker, memory-mapped, cancellable |
+| `STEP.readTopology(data:…)` / `readTopology(contentsOf:…)` | `STEP.Topology`: `edges` plus the faces of every body (surface, sense, boundary loops), no triangles |
+| `STEP.load(contentsOf:…)` / `loadGeometry(contentsOf:…)` / `loadTopology(contentsOf:…)` | Same, `async`: detached worker, memory-mapped, cancellable |
 
 Call the synchronous forms from a background task, never the main actor.
 
@@ -40,7 +41,12 @@ Call the synchronous forms from a background task, never the main actor.
 | `STEP.Diagnostic` | `entityID`, `message`, `severity` (`info`, `warning`, `skipped`), `code` (stable short id such as `unsupported-curve`, `vertex-off-curve`, `chord-cap`) |
 | `STEP.ParseError` | `description` and `kind`: `.notSTEP`, `.truncated`, `.malformed`, `.assembly`, `.unresolvedUnits(contextID:)`, `.limitExceeded`, `.invalidOptions` |
 | `STEP.Options` | `assumedUnitScaleToMM`, `chordToleranceMM`, `maximumEntityCount`. When a file declares its distance accuracy, boundary edges that meet within it (capped at the chord tolerance) close a face loop |
-| `STEP.Edge` | `id`, `kind`, `points: [SIMD3<Double>]` (mm, source coordinates), `startVertexID`, `endVertexID`, `adjacentFaceIDs`, `chordError` |
+| `STEP.Edge` | `id`, `kind`, `points: [SIMD3<Double>]` (mm, source coordinates), `startVertexID`, `endVertexID`, `adjacentFaceIDs`, `chordError`, `isSeam` (one face uses it in both directions: a cylinder's seam), `curve` |
+| `STEP.Edge.Curve` | The exact curve behind `points`: `.line`, `.circle(frame:radius:startAngle:sweep:)` (centre `frame.origin`, axis `frame.z`, signed sweep in radians), `.other` for ellipses, B-splines and polylines (`.ellipse` is reserved, not filled yet) |
+| `STEP.BodyInfo` | `id`, `contextID`, `unitScaleToMM`, `unitsAssumed`, `uncertaintyMM`, `bounds` (min/max of the body's own edges), `name` (the body entity's name string, as written) |
+| `STEP.Topology` | `edges: EdgeModel`, `faces: [Face]` (by body, then face ID), `diagnostics`, `faces(of:)` |
+| `STEP.Face` | `id`, `bodyID`, `sameSense`, `isShellReversed` (void shell), `surface: Surface?` (`nil` for a surface kind that is not supported, the face is still listed), `surfaceTypeName`, `loops: [[OrientedEdgeRef]]`, `outerLoopIndex`, `outerLoop` |
+| `STEP.OrientedEdgeRef` | `edge: EdgeID` (matches `Edge.id`), `isForward`. Loops run in the direction of their face bound, so a bound written `.F` is reversed |
 | `STEP.EdgeID` / `STEP.BodyID` | Stable identity for one import: `importID` + body (representation and body entity IDs) + `EDGE_CURVE` entity ID |
 | `STEP.Bounds` | `min`, `max`, `size`, `workpieceOrigin` (min X, min Y, max Z) as `SIMD3<Double>` |
 | `STEP.Geometry` | `edges: EdgeModel`, `surfaces: SurfaceModel` |
@@ -111,6 +117,7 @@ result with `bounds == nil`.
 | `STEPUnits.swift` | Length and plane-angle units per representation context |
 | `STEPEdgeExtractor.swift` | Body → shell → face → loop → edge traversal |
 | `STEPCurves.swift`, `STEPBSpline.swift` | Curve resolution, trims, sampling, B-splines |
+| `STEPFaces.swift` | Faces and surfaces read once for both the tessellator and `readTopology`; `Face`, `Topology` |
 | `STEPTessellator.swift`, `STEPSlabTriangulator.swift` | Face triangulation |
 
 A `STEPFile` and its extractor are task-confined: never share them across tasks. Use the static entry points.

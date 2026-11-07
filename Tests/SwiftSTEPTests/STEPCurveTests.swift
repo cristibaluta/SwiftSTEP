@@ -101,20 +101,60 @@ private final class StepBuilder {
     static func fwd(_ edge: Int) -> Use { (edge, true) }
     static func rev(_ edge: Int) -> Use { (edge, false) }
 
+    struct FaceSpec {
+        /// `nil`: the builder's shared plane.
+        var surface: Int?
+        var sameSense = true
+        /// The first loop is the outer bound unless `plainBounds` is set.
+        var loops: [[Use]]
+        /// Write every bound as FACE_BOUND, none as FACE_OUTER_BOUND.
+        var plainBounds = false
+        /// The orientation written on the first bound.
+        var firstBoundForward = true
+    }
+
+    struct BodySpec {
+        var name = ""
+        var faces: [FaceSpec]
+        /// Faces of one void shell: the body is then a BREP_WITH_VOIDS.
+        var voidFaces: [FaceSpec] = []
+    }
+
     /// One face per loop.
     func data(loops: [[Use]]) -> Data {
-        let surface = add("PLANE('',#\(placement(origin: .zero)))")
-        var faces: [Int] = []
-        for loop in loops {
-            let uses = loop.map { add("ORIENTED_EDGE('',*,*,#\($0.edge),.\($0.forward ? "T" : "F").)") }
-            let edgeLoop = add("EDGE_LOOP('',(\(uses.map { "#\($0)" }.joined(separator: ","))))")
-            let bound = add("FACE_OUTER_BOUND('',#\(edgeLoop),.T.)")
-            faces.append(add("ADVANCED_FACE('',(#\(bound)),#\(surface),.T.)"))
+        data(bodies: [BodySpec(faces: loops.map { FaceSpec(loops: [$0]) })])
+    }
+
+    func data(bodies: [BodySpec]) -> Data {
+        let sharedPlane = add("PLANE('',#\(placement(origin: .zero)))")
+        func shell(_ faces: [FaceSpec]) -> Int {
+            var ids: [Int] = []
+            for face in faces {
+                var bounds: [Int] = []
+                for (index, loop) in face.loops.enumerated() {
+                    let uses = loop.map { add("ORIENTED_EDGE('',*,*,#\($0.edge),.\($0.forward ? "T" : "F").)") }
+                    let edgeLoop = add("EDGE_LOOP('',(\(uses.map { "#\($0)" }.joined(separator: ","))))")
+                    let kind = index == 0 && !face.plainBounds ? "FACE_OUTER_BOUND" : "FACE_BOUND"
+                    let forward = index == 0 ? face.firstBoundForward : true
+                    bounds.append(add("\(kind)('',#\(edgeLoop),.\(forward ? "T" : "F")."))
+                }
+                let list = bounds.map { "#\($0)" }.joined(separator: ",")
+                ids.append(add("ADVANCED_FACE('',(\(list)),#\(face.surface ?? sharedPlane),.\(face.sameSense ? "T" : "F")."))
+            }
+            return add("CLOSED_SHELL('',(\(ids.map { "#\($0)" }.joined(separator: ","))))")
         }
-        let shell = add("CLOSED_SHELL('',(\(faces.map { "#\($0)" }.joined(separator: ","))))")
-        let solid = add("MANIFOLD_SOLID_BREP('',#\(shell))")
+        var solids: [Int] = []
+        for body in bodies {
+            let outer = shell(body.faces)
+            if body.voidFaces.isEmpty {
+                solids.append(add("MANIFOLD_SOLID_BREP('\(body.name)',#\(outer))"))
+            } else {
+                let oriented = add("ORIENTED_CLOSED_SHELL('',*,#\(shell(body.voidFaces)),.F.)")
+                solids.append(add("BREP_WITH_VOIDS('\(body.name)',#\(outer),(#\(oriented)))"))
+            }
+        }
         let context = addContext()
-        add("ADVANCED_BREP_SHAPE_REPRESENTATION('',(#\(solid)),#\(context))")
+        add("ADVANCED_BREP_SHAPE_REPRESENTATION('',(\(solids.map { "#\($0)" }.joined(separator: ","))),#\(context))")
 
         return Data(("ISO-10303-21;\nHEADER;\nFILE_DESCRIPTION(('curve test'),'2;1');\n"
             + "FILE_NAME('t.step','2026-01-01T00:00:00',(''),(''),'','','');\n"
@@ -224,6 +264,22 @@ struct STEPCurveTests {
             #expect(edge.adjacentFaceIDs.count == 2)
         }
         #expect(model.edges.first { $0.kind == .line }?.adjacentFaceIDs.count == 1)
+
+        // T20: the line is the only edge one face uses twice (once in each direction).
+        #expect(model.edges.filter { $0.isSeam }.map(\.kind) == [.line])
+
+        // T21: the circles keep their centre, axis and radius, and the line says it is a line.
+        #expect(model.edges.first { $0.kind == .line }?.curve == .line)
+        for edge in circles {
+            guard case .circle(let frame, let radius, _, let sweep) = edge.curve else {
+                Issue.record("expected an exact circle")
+                continue
+            }
+            #expect(abs(radius - 5) < 1e-9)
+            #expect(near(frame.origin, SIMD3(0, 0, edge.points[0].z)))
+            #expect(near(frame.z, SIMD3(0, 0, 1)))
+            #expect(abs(abs(sweep) - 2 * Double.pi) < 1e-9)
+        }
 
         let bounds = try #require(model.bounds)
         #expect(near(bounds.min, SIMD3(-5, -5, 0), 1e-6) && near(bounds.max, SIMD3(5, 5, 10), 1e-6))
@@ -1117,5 +1173,315 @@ struct STEPPhase1Tests {
         #expect(header.preprocessorVersion == "preproc 1.0")
         #expect(header.originatingSystem == "SomeCAD 2026")
         #expect(header.authorization == "auth")
+    }
+}
+
+// MARK: - Phase 2: output for CAM
+
+/// A 10 × 20 × 30 box by default: 8 vertices, 12 line edges, 6 planar faces of four edges each.
+/// Corner `i` has x = i & 1, y = (i >> 1) & 1, z = (i >> 2) & 1 (as 0 or the full size). Every face
+/// runs counter-clockwise seen from outside, so neighbours use their shared edge in opposite directions.
+private func boxBody(_ b: StepBuilder, origin: SIMD3<Double> = .zero, size: SIMD3<Double> = SIMD3(10, 20, 30),
+                     name: String = "") -> StepBuilder.BodySpec {
+    func corner(_ i: Int) -> SIMD3<Double> {
+        origin + SIMD3(i & 1 == 0 ? 0 : size.x, i & 2 == 0 ? 0 : size.y, i & 4 == 0 ? 0 : size.z)
+    }
+    let vertices = (0..<8).map { b.vertex(corner($0)) }
+    var edges: [[Int]: Int] = [:]
+    func use(_ from: Int, _ to: Int) -> StepBuilder.Use {
+        let key = [min(from, to), max(from, to)]
+        if edges[key] == nil {
+            let direction = simd_normalize(corner(key[1]) - corner(key[0]))
+            edges[key] = b.edge(start: vertices[key[0]], end: vertices[key[1]],
+                                curve: b.line(from: corner(key[0]), direction: direction))
+        }
+        return (edge: edges[key]!, forward: from < to)
+    }
+    func face(_ cycle: [Int], normal: SIMD3<Double>) -> StepBuilder.FaceSpec {
+        let plane = b.add("PLANE('',#\(b.placement(origin: corner(cycle[0]), axis: normal)))")
+        let loop = (0..<cycle.count).map { use(cycle[$0], cycle[($0 + 1) % cycle.count]) }
+        return StepBuilder.FaceSpec(surface: plane, loops: [loop])
+    }
+    return StepBuilder.BodySpec(name: name, faces: [
+        face([0, 2, 3, 1], normal: SIMD3(0, 0, -1)),
+        face([4, 5, 7, 6], normal: SIMD3(0, 0, 1)),
+        face([0, 1, 5, 4], normal: SIMD3(0, -1, 0)),
+        face([2, 6, 7, 3], normal: SIMD3(0, 1, 0)),
+        face([0, 4, 6, 2], normal: SIMD3(-1, 0, 0)),
+        face([1, 3, 7, 5], normal: SIMD3(1, 0, 0))
+    ])
+}
+
+@Suite("STEP output for CAM")
+struct STEPPhase2Tests {
+
+    // MARK: T20
+
+    @Test func aBoxHasNoSeams() throws {
+        let b = StepBuilder()
+        let model = try parse(b.data(bodies: [boxBody(b)]))
+        #expect(model.edges.count == 12)
+        #expect(model.edges.allSatisfy { !$0.isSeam && $0.adjacentFaceIDs.count == 2 })
+    }
+
+    // MARK: T21
+
+    @Test func arcsKeepTheirFrameRadiusAndSweep() throws {
+        let quarter = try #require(try parse(singleArc(from: 0, to: .pi / 2)).edges.first)
+        guard case .circle(let frame, let radius, let start, let sweep) = quarter.curve else {
+            Issue.record("expected an exact circle")
+            return
+        }
+        #expect(quarter.kind == .arc)
+        #expect(near(frame.origin, .zero) && near(frame.z, SIMD3(0, 0, 1)))
+        #expect(abs(radius - 5) < 1e-12)
+        #expect(abs(start) < 1e-9 && abs(sweep - .pi / 2) < 1e-9)
+
+        // The long way round and the short way round, as the same_sense test reads them.
+        let long = try #require(try parse(singleArc(from: .pi / 2, to: 0, sameSense: true)).edges.first)
+        let short = try #require(try parse(singleArc(from: .pi / 2, to: 0, sameSense: false)).edges.first)
+        for (edge, expectedSweep) in [(long, 1.5 * Double.pi), (short, -0.5 * Double.pi)] {
+            guard case .circle(let frame, let radius, let start, let sweep) = edge.curve else {
+                Issue.record("expected an exact circle")
+                continue
+            }
+            #expect(abs(sweep - expectedSweep) < 1e-9)
+            // The description reproduces the polyline's ends.
+            func point(_ angle: Double) -> SIMD3<Double> {
+                frame.origin + radius * cos(angle) * frame.x + radius * sin(angle) * frame.y
+            }
+            #expect(near(point(start), edge.points.first!, 1e-9))
+            #expect(near(point(start + sweep), edge.points.last!, 1e-9))
+        }
+    }
+
+    @Test func circleFrameFollowsAMovedPlacement() throws {
+        let b = StepBuilder()
+        let placement = b.placement(origin: SIMD3(1, 2, 3), axis: SIMD3(1, 0, 0))
+        let radius = 4.0
+        // With axis +X the default reference direction is world Z, so the frame's x is world Z.
+        let vertex = b.vertex(SIMD3(1, 2, 3) + SIMD3(0, 0, radius))
+        let edge = b.edge(start: vertex, end: vertex, curve: b.circle(placement: placement, radius: radius))
+        let model = try parse(b.data(loops: [[StepBuilder.fwd(edge)]]))
+        guard case .circle(let frame, let found, _, _)? = model.edges.first?.curve else {
+            Issue.record("expected an exact circle")
+            return
+        }
+        #expect(near(frame.origin, SIMD3(1, 2, 3)) && near(frame.z, SIMD3(1, 0, 0)))
+        #expect(abs(found - radius) < 1e-12)
+    }
+
+    @Test func ellipsesAndSplinesStayOther() throws {
+        let ellipse = try parse(singleEdge(start: SIMD3(6, 0, 0), end: SIMD3(6, 0, 0), sameVertex: true) {
+            $0.ellipse(placement: $0.placement(origin: .zero), semiAxis1: 6, semiAxis2: 3)
+        })
+        #expect(ellipse.edges.first?.kind == .ellipse)
+        #expect(ellipse.edges.first?.curve == .other)
+
+        let spline = try parse(singleEdge(start: bezierPoints[0], end: bezierPoints[3]) { cubicBezier($0) })
+        #expect(spline.edges.first?.kind == .bspline)
+        #expect(spline.edges.first?.curve == .other)
+    }
+
+    // MARK: T22
+
+    @Test func eachBodyReportsItsOwnBounds() throws {
+        let b = StepBuilder()
+        let small = boxBody(b, origin: SIMD3(100, 0, 0), size: SIMD3(5, 5, 5))
+        let big = boxBody(b)
+        let model = try parse(b.data(bodies: [big, small]))
+        #expect(model.bodies.count == 2)
+
+        let first = try #require(model.bodies[0].bounds)
+        let second = try #require(model.bodies[1].bounds)
+        #expect(near(first.min, .zero) && near(first.max, SIMD3(10, 20, 30)))
+        #expect(near(second.min, SIMD3(100, 0, 0)) && near(second.max, SIMD3(105, 5, 5)))
+
+        // The model's box is the union of the two.
+        let all = try #require(model.bounds)
+        #expect(near(all.min, .zero) && near(all.max, SIMD3(105, 20, 30)))
+    }
+
+    @Test func aBodyWithoutExtractedEdgesHasNoBounds() throws {
+        let b = StepBuilder()
+        let start = b.vertex(.zero)
+        let end = b.vertex(SIMD3(10, 0, 0))
+        // A parabola is not supported: the edge is skipped.
+        let curve = b.add("PARABOLA('',#\(b.placement(origin: .zero)),1.0E+00)")
+        let edge = b.edge(start: start, end: end, curve: curve)
+        let model = try parse(b.data(loops: [[StepBuilder.fwd(edge)]]))
+        #expect(model.bodies.count == 1 && model.bodies[0].bounds == nil)
+        #expect(model.bounds == nil)
+    }
+
+    // MARK: T23
+
+    @Test func bodyNamesAreRead() throws {
+        let b = StepBuilder()
+        let named = boxBody(b, name: "Base plate")
+        var unnamed = boxBody(b, origin: SIMD3(100, 0, 0))
+        unnamed.name = ""
+        var voided = boxBody(b, origin: SIMD3(200, 0, 0), size: SIMD3(30, 30, 30), name: "Housing")
+        voided.voidFaces = boxBody(b, origin: SIMD3(210, 10, 10), size: SIMD3(5, 5, 5)).faces
+        let model = try parse(b.data(bodies: [named, unnamed, voided]))
+        #expect(model.bodies.map(\.name) == ["Base plate", nil, "Housing"])
+    }
+
+    // MARK: T24
+
+    @Test func aBoxListsItsFacesWithTheirPlanes() throws {
+        let b = StepBuilder()
+        let topology = try STEP.readTopology(data: b.data(bodies: [boxBody(b)]))
+        #expect(topology.faces.count == 6 && topology.diagnostics.isEmpty)
+        #expect(topology.edges.edges.count == 12)
+
+        let normals = topology.faces.compactMap { face -> SIMD3<Double>? in
+            guard case .plane(let frame)? = face.surface else { return nil }
+            return frame.z
+        }
+        #expect(normals.count == 6)
+        #expect(Set(normals.map { [$0.x, $0.y, $0.z] }).count == 6, "six different outward normals")
+        for face in topology.faces {
+            #expect(face.surfaceTypeName == "PLANE" && face.sameSense && !face.isShellReversed)
+        }
+        // Face IDs are the ones the edges name.
+        let named = Set(topology.edges.edges.flatMap { $0.adjacentFaceIDs })
+        #expect(named == Set(topology.faces.map(\.id)))
+    }
+
+    @Test func anUnsupportedFaceDoesNotHideTheOthers() throws {
+        let b = StepBuilder()
+        var body = boxBody(b)
+        let axis = b.add("AXIS1_PLACEMENT('',#\(b.point(.zero)),#\(b.direction(SIMD3(0, 0, 1))))")
+        let circle = b.circle(placement: b.placement(origin: .zero), radius: 5)
+        body.faces[2].surface = b.add("SURFACE_OF_REVOLUTION('',#\(circle),#\(axis))")
+        // `data` appends to the builder's lines, so build the file once and read it twice.
+        let data = b.data(bodies: [body])
+        let topology = try STEP.readTopology(data: data)
+
+        #expect(topology.faces.count == 6)
+        let swept = topology.faces.filter { $0.surface == nil }
+        #expect(swept.count == 1)
+        #expect(swept.first?.surfaceTypeName == "SURFACE_OF_REVOLUTION")
+        #expect(swept.first?.loops.count == 1, "the boundary is still listed")
+        #expect(topology.faces.filter { $0.surfaceTypeName == "PLANE" }.count == 5)
+        let note = try #require(topology.diagnostics.first { $0.code == "unsupported-surface" })
+        #expect(note.entityID == swept.first?.id && note.severity == .warning)
+
+        // The tessellator, in contrast, drops the whole body for that one face.
+        let geometry = try STEP.readGeometry(data: data)
+        #expect(geometry.surfaces.unsurfacedBodies.count == 1)
+    }
+
+    @Test func voidShellFacesAreMarkedReversed() throws {
+        let b = StepBuilder()
+        var housing = boxBody(b, size: SIMD3(30, 30, 30), name: "Housing")
+        housing.voidFaces = boxBody(b, origin: SIMD3(10, 10, 10), size: SIMD3(5, 5, 5)).faces
+        let topology = try STEP.readTopology(data: b.data(bodies: [housing]))
+        #expect(topology.faces.count == 12)
+        #expect(topology.faces.filter { $0.isShellReversed }.count == 6)
+        let body = try #require(topology.edges.bodies.first)
+        #expect(topology.faces(of: body.id).count == 12)
+    }
+
+    @Test func facesFollowTheBodyOrder() throws {
+        let b = StepBuilder()
+        let model = try STEP.readTopology(data: b.data(bodies: [boxBody(b), boxBody(b, origin: SIMD3(100, 0, 0))]))
+        #expect(model.faces.count == 12)
+        let ids = model.edges.bodies.map(\.id)
+        #expect(model.faces.prefix(6).allSatisfy { $0.bodyID == ids[0] })
+        #expect(model.faces.suffix(6).allSatisfy { $0.bodyID == ids[1] })
+    }
+
+    // MARK: T25
+
+    @Test func theBoxHasSixOuterLoopsOfFourEdges() throws {
+        let b = StepBuilder()
+        let topology = try STEP.readTopology(data: b.data(bodies: [boxBody(b)]))
+        #expect(topology.faces.count == 6)
+        for face in topology.faces {
+            #expect(face.loops.count == 1 && face.outerLoopIndex == 0)
+            #expect(face.outerLoop?.count == 4)
+        }
+        // Every loop names an extracted edge, and each edge is run once in each direction.
+        let known = Set(topology.edges.edges.map(\.id))
+        var directions: [Int: [Bool]] = [:]
+        for face in topology.faces {
+            for ref in face.loops.flatMap({ $0 }) {
+                #expect(known.contains(ref.edge))
+                directions[ref.edge.entityID, default: []].append(ref.isForward)
+            }
+        }
+        #expect(directions.count == 12)
+        #expect(directions.values.allSatisfy { $0.count == 2 && Set($0) == [true, false] })
+    }
+
+    @Test func holesAreListedAfterTheOuterLoop() throws {
+        let b = StepBuilder()
+        let corners = [SIMD3<Double>(0, 0, 0), SIMD3(10, 0, 0), SIMD3(10, 10, 0), SIMD3(0, 10, 0)]
+        let vertices = corners.map { b.vertex($0) }
+        let sides = (0..<4).map { i -> Int in
+            let from = corners[i]
+            let to = corners[(i + 1) % 4]
+            return b.edge(start: vertices[i], end: vertices[(i + 1) % 4],
+                          curve: b.line(from: from, direction: simd_normalize(to - from)))
+        }
+        let holeVertex = b.vertex(SIMD3(7, 5, 0))
+        let hole = b.edge(start: holeVertex, end: holeVertex,
+                          curve: b.circle(placement: b.placement(origin: SIMD3(5, 5, 0)), radius: 2))
+        let face = StepBuilder.FaceSpec(loops: [sides.map { StepBuilder.fwd($0) }, [StepBuilder.rev(hole)]])
+        let topology = try STEP.readTopology(data: b.data(bodies: [StepBuilder.BodySpec(faces: [face])]))
+
+        let listed = try #require(topology.faces.first)
+        #expect(listed.loops.count == 2 && listed.outerLoopIndex == 0)
+        #expect(listed.loops[0].count == 4 && listed.loops[1].count == 1)
+        #expect(listed.loops[1][0].edge.entityID == hole && !listed.loops[1][0].isForward)
+    }
+
+    @Test func aBoundWrittenBackwardsIsReversed() throws {
+        let b = StepBuilder()
+        let corners = [SIMD3<Double>(0, 0, 0), SIMD3(10, 0, 0), SIMD3(10, 10, 0), SIMD3(0, 10, 0)]
+        let vertices = corners.map { b.vertex($0) }
+        let sides = (0..<4).map { i -> Int in
+            b.edge(start: vertices[i], end: vertices[(i + 1) % 4],
+                   curve: b.line(from: corners[i], direction: simd_normalize(corners[(i + 1) % 4] - corners[i])))
+        }
+        let uses = sides.map { StepBuilder.fwd($0) }
+        let plain = StepBuilder.FaceSpec(loops: [uses])
+        var flipped = StepBuilder.FaceSpec(loops: [uses])
+        flipped.firstBoundForward = false
+        let topology = try STEP.readTopology(data: b.data(bodies: [StepBuilder.BodySpec(faces: [plain, flipped])]))
+
+        #expect(topology.faces.count == 2)
+        let forwardLoop = topology.faces[0].loops[0]
+        let backwardLoop = topology.faces[1].loops[0]
+        let expected = forwardLoop.reversed().map { STEP.OrientedEdgeRef(edge: $0.edge, isForward: !$0.isForward) }
+        #expect(backwardLoop == expected)
+    }
+
+    @Test func anUnmarkedOuterBoundIsNotGuessed() throws {
+        let b = StepBuilder()
+        let start = b.vertex(.zero)
+        let end = b.vertex(SIMD3(10, 0, 0))
+        let edge = b.edge(start: start, end: end, curve: b.line(from: .zero, direction: SIMD3(1, 0, 0)))
+        var face = StepBuilder.FaceSpec(loops: [[StepBuilder.fwd(edge)]])
+        face.plainBounds = true
+        let topology = try STEP.readTopology(data: b.data(bodies: [StepBuilder.BodySpec(faces: [face])]))
+        let listed = try #require(topology.faces.first)
+        #expect(listed.loops.count == 1)
+        #expect(listed.outerLoopIndex == nil && listed.outerLoop == nil)
+    }
+
+    @Test func unreadableLoopsAreReportedNotHalfListed() throws {
+        let b = StepBuilder()
+        let start = b.vertex(.zero)
+        let end = b.vertex(SIMD3(10, 0, 0))
+        let edge = b.edge(start: start, end: end, curve: b.line(from: .zero, direction: SIMD3(1, 0, 0)))
+        let text = String(decoding: b.data(loops: [[StepBuilder.fwd(edge)]]), as: UTF8.self)
+            .replacingOccurrences(of: "EDGE_LOOP(", with: "POLY_LOOP(")
+        let topology = try STEP.readTopology(data: Data(text.utf8))
+        let listed = try #require(topology.faces.first)
+        #expect(listed.loops.isEmpty && listed.outerLoopIndex == nil)
+        #expect(topology.diagnostics.contains { $0.code == "face-loops-unreadable" })
     }
 }

@@ -24,6 +24,8 @@ final class STEPTessellator {
     static let maximumTriangles = 1_000_000
 
     private let file: STEPFile
+    /// Finds a body's faces and reads their surfaces; shared with the topology output.
+    private let reader: STEPFaceReader
     private let model: STEP.EdgeModel
     private let tolerance: Double
     /// Rebuilt for each body from the accuracy its context declares.
@@ -31,11 +33,9 @@ final class STEPTessellator {
     private var surfaces: STEP.SurfaceModel
     private var triangleBudget = STEPTessellator.maximumTriangles
 
-    private static let bodyTypes: Set<String> = ["MANIFOLD_SOLID_BREP", "BREP_WITH_VOIDS", "SHELL_BASED_SURFACE_MODEL"]
-    private static let surfaceTypes: Set<String> = ["PLANE", "CYLINDRICAL_SURFACE", "CONICAL_SURFACE",
-                                                    "SPHERICAL_SURFACE", "TOROIDAL_SURFACE"]
     init(file: STEPFile, model: STEP.EdgeModel, options: STEP.Options) {
         self.file = file
+        reader = STEPFaceReader(file: file, chordTolerance: options.chordToleranceMM)
         self.model = model
         tolerance = options.chordToleranceMM
         tolerances = STEPTolerances(chord: options.chordToleranceMM)
@@ -69,7 +69,7 @@ final class STEPTessellator {
         tolerances = STEPTolerances(chord: tolerance, declaredUncertainty: body.uncertaintyMM)
         let faces: [(id: Int, flipped: Bool)]
         do {
-            faces = try collectFaces(bodyID: body.id.entityID)
+            faces = try reader.collectFaces(bodyID: body.id.entityID)
         } catch let error as STEP.ParseError {
             surfaces.unsurfacedBodies.append(body.id)
             surfaces.faceFailures.append(STEP.FaceFailure(bodyID: body.id, faceID: nil, surfaceID: nil,
@@ -95,13 +95,13 @@ final class STEPTessellator {
             try Task.checkCancellation()
             var surfaceID: Int?
             do {
-                let parsed = try parseFace(face.id)
+                let parsed = try reader.parseFace(face.id)
                 surfaceID = parsed.surfaceID
                 let surface: STEP.Surface
                 if let cached = surfaceCache[parsed.surfaceID] {
                     surface = cached
                 } else {
-                    surface = try parseSurface(parsed.surfaceID, scale: scale, contextID: contextID)
+                    surface = try reader.parseSurface(parsed.surfaceID, scale: scale, contextID: contextID)
                     surfaceCache[parsed.surfaceID] = surface
                 }
                 try tessellateFace(face.id, parsed: parsed, surface: surface, shellFlipped: face.flipped,
@@ -119,7 +119,7 @@ final class STEPTessellator {
                     mesh = STEP.BodyMesh(id: body.id)
                 }
                 failed += 1
-                let type = surfaceID.flatMap { surfaceTypeName($0) }
+                let type = surfaceID.flatMap { reader.surfaceTypeName($0) }
                 let reason = explain(error.description, edges: edges)
                 surfaces.faceFailures.append(STEP.FaceFailure(bodyID: body.id, faceID: face.id, surfaceID: surfaceID,
                                                               surfaceType: type, reason: reason))
@@ -143,12 +143,6 @@ final class STEPTessellator {
         }
     }
 
-    /// The STEP type name of a surface entity, for messages ("CYLINDRICAL_SURFACE", "SURFACE_OF_REVOLUTION").
-    private func surfaceTypeName(_ id: Int) -> String? {
-        guard let components = try? file.components(id) else { return nil }
-        return components.map { $0.type }.first(where: { !Self.surfaceMixins.contains($0) }) ?? components.first?.type
-    }
-
     /// Adds the reason an edge was skipped when a face fails only because that edge has no geometry:
     /// "has no extracted geometry" alone sends the reader looking in the wrong place.
     private func explain(_ message: String, edges: [STEP.Edge]) -> String {
@@ -157,228 +151,6 @@ final class STEPTessellator {
               let edgeID = Int(message[range].dropFirst()),
               let note = model.diagnostics.first(where: { $0.entityID == edgeID }) else { return message }
         return "\(message) (edge note: \(note.message))"
-    }
-
-    /// Faces of the body's shells, each with whether its shell is reversed (the void shells of
-    /// a BREP_WITH_VOIDS are ORIENTED_CLOSED_SHELL with orientation .F). Sorted by face ID.
-    private func collectFaces(bodyID: Int) throws -> [(id: Int, flipped: Bool)] {
-        var faces: [Int: Bool] = [:]
-
-        func addShell(_ id: Int, flipped: Bool, depth: Int) throws {
-            try Task.checkCancellation()
-            guard depth < 8 else { throw STEP.ParseError("Shell nesting is too deep at #\(id)") }
-            let components = try file.components(id)
-            if let oriented = components.first(where: { $0.type == "ORIENTED_CLOSED_SHELL" }) {
-                guard let orientation = try oriented.parameters.argument(3).enumeration,
-                      orientation == "T" || orientation == "F" else {
-                    throw STEP.ParseError("Invalid ORIENTED_CLOSED_SHELL orientation at #\(id)")
-                }
-                try addShell(try oriented.parameters.reference(at: 2),
-                             flipped: flipped != (orientation == "F"), depth: depth + 1)
-                return
-            }
-            guard let shell = components.first(where: { $0.type == "CLOSED_SHELL" || $0.type == "OPEN_SHELL" }) else {
-                throw STEP.ParseError("Unsupported shell at #\(id)")
-            }
-            for face in try shell.parameters.references(at: 1) {
-                guard file.hasType(face, "ADVANCED_FACE") || file.hasType(face, "FACE_SURFACE") else {
-                    throw STEP.ParseError("Unsupported face type at #\(face)")
-                }
-                if faces[face] == nil { faces[face] = flipped }
-            }
-        }
-
-        let components = try file.components(bodyID)
-        guard let body = components.first(where: { Self.bodyTypes.contains($0.type) }) else {
-            throw STEP.ParseError("Unsupported body at #\(bodyID)")
-        }
-        let p = body.parameters
-        switch body.type {
-            case "MANIFOLD_SOLID_BREP":
-                try addShell(try p.reference(at: 1), flipped: false, depth: 0)
-            case "BREP_WITH_VOIDS":
-                try addShell(try p.reference(at: 1), flipped: false, depth: 0)
-                for void in try p.references(at: 2) { try addShell(void, flipped: false, depth: 0) }
-            default:
-                for shell in try p.references(at: 1) { try addShell(shell, flipped: false, depth: 0) }
-        }
-        return faces.keys.sorted().map { (id: $0, flipped: faces[$0] ?? false) }
-    }
-
-    // MARK: Faces and surfaces
-
-    private struct ParsedFace {
-        let boundIDs: [Int]
-        let surfaceID: Int
-        let sameSense: Bool
-    }
-
-    private func parseFace(_ id: Int) throws -> ParsedFace {
-        let components = try file.components(id)
-        guard let part = components.first(where: { $0.type == "ADVANCED_FACE" || $0.type == "FACE_SURFACE" }) else {
-            throw STEP.ParseError("Unsupported face type")
-        }
-        let p = part.parameters
-        guard let sense = try p.argument(3).enumeration, sense == "T" || sense == "F" else {
-            throw STEP.ParseError("Invalid face same_sense")
-        }
-        return ParsedFace(boundIDs: try p.references(at: 1), surfaceID: try p.reference(at: 2), sameSense: sense == "T")
-    }
-
-    /// Mixin types of a complex record that say nothing about which surface it is.
-    private static let surfaceMixins: Set<String> = ["BOUNDED_SURFACE", "SURFACE", "GEOMETRIC_REPRESENTATION_ITEM",
-                                                     "REPRESENTATION_ITEM"]
-
-    private func parseSurface(_ id: Int, scale: Double, contextID: Int) throws -> STEP.Surface {
-        let components = try file.components(id)
-        if components.contains(where: { $0.type == "B_SPLINE_SURFACE_WITH_KNOTS" }) {
-            return try parseBSplineSurface(id, components: components, scale: scale)
-        }
-        guard let part = components.first(where: { Self.surfaceTypes.contains($0.type) }) else {
-            // A complex record starts with mixins such as BOUNDED_SURFACE; name the real kind.
-            let kind = components.map { $0.type }.first(where: { !Self.surfaceMixins.contains($0) })
-                ?? components.first?.type ?? "unknown"
-            throw STEP.ParseError("Unsupported surface type \(kind) at #\(id)")
-        }
-        let p = part.parameters
-        // Only the frame helper is used: the resolver scales the placement's origin.
-        let resolver = STEPCurveResolver(file: file, scaleToMM: scale, chordTolerance: tolerance,
-                                         tolerances: tolerances, angleScaleToRadians: { 1 })
-        let frame = try resolver.frame(try p.reference(at: 1))
-
-        func length(_ index: Int, allowZero: Bool = false) throws -> Double {
-            guard let value = try p.argument(index).number, value.isFinite,
-                  allowZero ? value >= 0 : value > 0, (value * scale).isFinite else {
-                throw STEP.ParseError("Invalid \(part.type) dimension at #\(id)")
-            }
-            return value * scale
-        }
-
-        switch part.type {
-            case "PLANE":
-                return .plane(frame)
-            case "CYLINDRICAL_SURFACE":
-                return .cylinder(frame, radius: try length(2))
-            case "CONICAL_SURFACE":
-                let radius = try length(2, allowZero: true)
-                guard let angle = try p.argument(3).number, angle.isFinite else {
-                    throw STEP.ParseError("Invalid CONICAL_SURFACE semi-angle at #\(id)")
-                }
-                let radiansPerUnit = try STEPUnits(file: file).angleScaleToRadians(contextID: contextID)
-                let halfAngle = angle * radiansPerUnit
-                guard halfAngle.isFinite, abs(halfAngle) < Double.pi / 2 - 1e-6 else {
-                    throw STEP.ParseError("Invalid CONICAL_SURFACE semi-angle at #\(id)")
-                }
-                return .cone(frame, radius: radius, halfAngle: halfAngle)
-            case "SPHERICAL_SURFACE":
-                return .sphere(frame, radius: try length(2))
-            default:
-                let major = try length(2)
-                let minor = try length(3)
-                guard major > minor else { throw STEP.ParseError("Self-intersecting torus at #\(id) is not supported") }
-                return .torus(frame, major: major, minor: minor)
-        }
-    }
-
-    // MARK: B-spline surfaces
-
-    /// Both file layouts: the simple 13-parameter B_SPLINE_SURFACE_WITH_KNOTS record, and the
-    /// complex record of B_SPLINE_SURFACE + B_SPLINE_SURFACE_WITH_KNOTS (+ RATIONAL_B_SPLINE_SURFACE
-    /// for weights) that CAD systems write for NURBS patches.
-    private func parseBSplineSurface(_ id: Int, components: [STEPComponent], scale: Double) throws -> STEP.Surface {
-        let uDegree: Int
-        let vDegree: Int
-        let netIDs: [[STEPValue]]
-        let uMultiplicities: [Int]
-        let vMultiplicities: [Int]
-        let uKnots: [Double]
-        let vKnots: [Double]
-        var weights: [[Double]]?
-        if let base = components.first(where: { $0.type == "B_SPLINE_SURFACE" }),
-           let withKnots = components.first(where: { $0.type == "B_SPLINE_SURFACE_WITH_KNOTS" }) {
-            uDegree = try Self.integer(base.parameters.argument(0))
-            vDegree = try Self.integer(base.parameters.argument(1))
-            netIDs = try Self.grid(base.parameters.argument(2))
-            uMultiplicities = try Self.integers(withKnots.parameters.argument(0))
-            vMultiplicities = try Self.integers(withKnots.parameters.argument(1))
-            uKnots = try Self.numbers(withKnots.parameters.argument(2))
-            vKnots = try Self.numbers(withKnots.parameters.argument(3))
-            if let rational = components.first(where: { $0.type == "RATIONAL_B_SPLINE_SURFACE" }) {
-                weights = try Self.grid(rational.parameters.argument(0)).map { try Self.numbers(.list($0)) }
-            }
-        } else if let simple = components.first(where: { $0.type == "B_SPLINE_SURFACE_WITH_KNOTS" }),
-                  simple.parameters.count == 13 {
-            uDegree = try Self.integer(simple.parameters.argument(1))
-            vDegree = try Self.integer(simple.parameters.argument(2))
-            netIDs = try Self.grid(simple.parameters.argument(3))
-            uMultiplicities = try Self.integers(simple.parameters.argument(8))
-            vMultiplicities = try Self.integers(simple.parameters.argument(9))
-            uKnots = try Self.numbers(simple.parameters.argument(10))
-            vKnots = try Self.numbers(simple.parameters.argument(11))
-        } else {
-            throw STEP.ParseError("Unsupported B-spline surface layout at #\(id)")
-        }
-        // Bound the work before resolving every control point.
-        let pointCount = netIDs.reduce(0) { $0 + $1.count }
-        guard pointCount <= STEP.BSplineSurface.maximumControlPoints else {
-            throw STEP.ParseError("B-spline surface #\(id) has too many control points")
-        }
-        let controlPoints: [[SIMD3<Double>]] = try netIDs.map { row in
-            try row.map { value in
-                guard let pointID = value.reference else { throw STEP.ParseError("Expected a control point reference in B-spline surface #\(id)") }
-                return try cartesianPoint(pointID, scale: scale)
-            }
-        }
-        let spline = try STEP.BSplineSurface(uDegree: uDegree, vDegree: vDegree, controlPoints: controlPoints,
-                                            weights: weights, uMultiplicities: uMultiplicities, uKnotValues: uKnots,
-                                            vMultiplicities: vMultiplicities, vKnotValues: vKnots)
-        if let limitation = spline.limitation {
-            throw STEP.ParseError("B-spline surface #\(id) \(limitation); not supported yet")
-        }
-        return .bspline(spline)
-    }
-
-    /// Scaled to millimetres, like every other point.
-    private func cartesianPoint(_ id: Int, scale: Double) throws -> SIMD3<Double> {
-        let point = try file.parameters(id, type: "CARTESIAN_POINT")
-        guard let coordinates = try point.argument(1).list, coordinates.count == 3 else {
-            throw STEP.ParseError("Expected 3D coordinates at #\(id)")
-        }
-        var result = SIMD3<Double>.zero
-        for axis in 0..<3 {
-            guard let value = coordinates[axis].number, value.isFinite, (value * scale).isFinite else {
-                throw STEP.ParseError("Nonfinite/invalid point #\(id)")
-            }
-            result[axis] = value * scale
-        }
-        return result
-    }
-
-    private static func integer(_ value: STEPValue) throws -> Int {
-        guard case .integer(let result) = value else { throw STEP.ParseError("Expected an integer in B-spline surface data") }
-        return result
-    }
-
-    private static func integers(_ value: STEPValue) throws -> [Int] {
-        guard let items = value.list else { throw STEP.ParseError("Expected a list of integers in B-spline surface data") }
-        return try items.map { try integer($0) }
-    }
-
-    private static func numbers(_ value: STEPValue) throws -> [Double] {
-        guard let items = value.list else { throw STEP.ParseError("Expected a list of numbers in B-spline surface data") }
-        return try items.map { item in
-            guard let number = item.number, number.isFinite else { throw STEP.ParseError("Nonfinite B-spline surface number") }
-            return number
-        }
-    }
-
-    /// A list of lists, as the control point net and the weights are written.
-    private static func grid(_ value: STEPValue) throws -> [[STEPValue]] {
-        guard let rows = value.list else { throw STEP.ParseError("Expected a grid in B-spline surface data") }
-        return try rows.map { row in
-            guard let items = row.list else { throw STEP.ParseError("Expected a grid in B-spline surface data") }
-            return items
-        }
     }
 
     // MARK: Boundary loops
@@ -567,7 +339,7 @@ final class STEPTessellator {
 
     // MARK: Face geometry
 
-    private func tessellateFace(_ id: Int, parsed: ParsedFace, surface: STEP.Surface, shellFlipped: Bool,
+    private func tessellateFace(_ id: Int, parsed: STEPFaceReader.ParsedFace, surface: STEP.Surface, shellFlipped: Bool,
                                 edges: [Int: STEP.Edge], into mesh: inout STEP.BodyMesh) throws {
         guard !parsed.boundIDs.isEmpty else { throw STEP.ParseError("Face has no boundary") }
         var loops: [ParamLoop] = []

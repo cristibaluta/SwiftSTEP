@@ -101,41 +101,47 @@ Each task is small and self-contained, so it can be done in one short session.
 
 ## Phase 2: better output for CAM
 
-### T20. Seam flag on edges (S)
+### T20. Seam flag on edges (S) — DONE
 - Files: `STEPEdgeExtractor.swift`, `Model.swift`
 - Do: during `collectEdges`, count how many times each face uses an edge. Add `isSeam` (the same face uses it twice) to `Edge`.
 - Done when: the cylinder test shows exactly one seam edge.
+- Status: done. `Edge.isSeam`; `collectEdges` now counts uses per face before its visited check. Tests: the cylinder test (one seam, the line), `aBoxHasNoSeams`. Not built or run (no Swift toolchain here): run `swift test`.
 
-### T21. Analytic curve data on edges (M)
+### T21. Analytic curve data on edges (M) — DONE
 - Files: `STEPCurves.swift`, `Model.swift`
 - Do:
   1. Add `Edge.curve` with `.line`, `.circle(frame, radius, startAngle, sweep)`, `.ellipse(...)`, `.other`.
   2. Fill it for lines and circles first, from data `resolveConic` already computes.
   3. Leave ellipse and B-spline as `.other`.
 - Done when: the box, cylinder and arc tests can read radius, centre and axis from edges.
+- Status: done. `Edge.Curve` (`.line`, `.circle(frame:radius:startAngle:sweep:)`, `.ellipse` reserved, `.other`), filled for lines and circles from `arcSpan`/`conicGeometry`. `STEP.Frame` is now `Equatable`. Tests: cylinder test, `arcsKeepTheirFrameRadiusAndSweep`, `circleFrameFollowsAMovedPlacement`, `ellipsesAndSplinesStayOther`. Not built or run (no Swift toolchain here): run `swift test`.
 
-### T22. Per-body bounds (S)
+### T22. Per-body bounds (S) — DONE
 - Files: `STEPEdgeExtractor.swift`, `Model.swift`
 - Do: add `bounds` to `BodyInfo`, computed from that body's edge points.
 - Done when: a two-body fixture reports two different boxes.
+- Status: done. `BodyInfo.bounds` (`nil` when no edge was extracted); `EdgeModel.bounds` is the union. Tests: `eachBodyReportsItsOwnBounds`, `aBodyWithoutExtractedEdgesHasNoBounds`. Not built or run (no Swift toolchain here): run `swift test`.
 
-### T23. Body and part names (S)
+### T23. Body and part names (S) — DONE
 - Files: `STEPEdgeExtractor.swift`, `Model.swift`
 - Do: read the name string of the body entity and expose it as `BodyInfo.name`.
 - Done when: a fixture with a named brep returns the name.
+- Status: done. `BodyInfo.name` is the body entity's first parameter (`nil` when `$` or empty), not decoded until T46. Complex-record bodies are not supported by the extractor at all, so only the plain record is read. Test: `bodyNamesAreRead` (including a `BREP_WITH_VOIDS`). Not built or run (no Swift toolchain here): run `swift test`.
 
-### T24. Face topology output, step 1: faces without tessellation (M)
+### T24. Face topology output, step 1: faces without tessellation (M) — DONE
 - Files: new `STEPFaces.swift`, `Model.swift`
 - Do:
   1. Add `STEP.Face` with `id`, `bodyID`, `sameSense`, `surface: Surface?` and `surfaceTypeName`.
   2. Reuse `parseFace` and `parseSurface` from the tessellator, moved into a shared helper.
   3. Add `EdgeModel.faces` or a separate `readTopology` entry point.
 - Done when: a body with one unsupported face still lists all its other faces with their surfaces.
+- Status: done. New `STEPFaces.swift`: `STEPFaceReader` holds `collectFaces`, `parseFace`, `parseSurface` (moved out of the tessellator, which now calls it). Separate entry point `STEP.readTopology` / `loadTopology` returning `STEP.Topology` (`edges` plus `faces`), so `read` pays nothing. `Face` has `isShellReversed` as well, because void-shell faces need it to find the material side. Diagnostic codes: `unsupported-surface` (warning), `face-skipped`, `body-unfaced` (skipped). Tests: `aBoxListsItsFacesWithTheirPlanes`, `anUnsupportedFaceDoesNotHideTheOthers`, `voidShellFacesAreMarkedReversed`, `facesFollowTheBodyOrder`. Not built or run (no Swift toolchain here): run `swift test`.
 
-### T25. Face topology output, step 2: loops (M, after T24)
+### T25. Face topology output, step 2: loops (M, after T24) — DONE
 - Files: `STEPFaces.swift`
 - Do: add `loops: [[OrientedEdgeRef]]` (edge ID plus orientation) and `outerLoopIndex` to `Face`.
 - Done when: the box test shows 6 faces with 4-edge outer loops.
+- Status: done. `Face.loops: [[OrientedEdgeRef]]` (`EdgeID` plus direction) and `outerLoopIndex`. A bound written `.F` is reversed with every use flipped. `outerLoopIndex` is `nil` when no bound is a FACE_OUTER_BOUND (nothing is guessed). A face with an unreadable bound lists no loops and gets a `face-loops-unreadable` warning. Tests: `theBoxHasSixOuterLoopsOfFourEdges`, `holesAreListedAfterTheOuterLoop`, `aBoundWrittenBackwardsIsReversed`, `anUnmarkedOuterBoundIsNotGuessed`, `unreadableLoopsAreReportedNotHalfListed`. Not built or run (no Swift toolchain here): run `swift test`.
 
 ---
 

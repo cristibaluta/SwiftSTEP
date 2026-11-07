@@ -75,23 +75,34 @@ final class STEPEdgeExtractor {
                                              angleScaleToRadians: { try self.angleScale(context: contextID) })
             for bodyID in bodyIDs {
                 let identity = STEP.BodyID(representationID: representationID, entityID: bodyID)
-                model.bodies.append(STEP.BodyInfo(id: identity, contextID: contextID, unitScaleToMM: scale,
-                                                     unitsAssumed: assumed, uncertaintyMM: tolerances.declaredUncertainty))
-                let adjacency = try collectEdges(bodyID: bodyID)
-                model.reachableEdgeCount += adjacency.count
-                for edgeID in adjacency.keys.sorted() {
+                let uses = try collectEdges(bodyID: bodyID)
+                model.reachableEdgeCount += uses.count
+                var bodyBounds: STEP.Bounds?
+                for edgeID in uses.keys.sorted() {
                     try Task.checkCancellation()
+                    let faceUses = uses[edgeID]!
                     do {
-                        let edge = try edge(edgeID, body: identity, resolver: resolver, faces: adjacency[edgeID]!.sorted())
+                        let edge = try edge(edgeID, body: identity, resolver: resolver, faces: faceUses.keys.sorted(),
+                                            isSeam: faceUses.values.contains { $0 >= 2 })
                         model.edges.append(edge)
                         for point in edge.points {
-                            if model.bounds == nil { model.bounds = STEP.Bounds(min: point, max: point) }
-                            else { model.bounds?.include(point) }
+                            if bodyBounds == nil { bodyBounds = STEP.Bounds(min: point, max: point) }
+                            else { bodyBounds?.include(point) }
                         }
                     } catch let error as STEP.ParseError {
                         diagnose(edgeID, error.description, .skipped, code: Self.code(forEdgeFailure: error.description))
                     }
                 }
+                if let bodyBounds {
+                    if model.bounds == nil { model.bounds = bodyBounds }
+                    else {
+                        model.bounds?.include(bodyBounds.min)
+                        model.bounds?.include(bodyBounds.max)
+                    }
+                }
+                model.bodies.append(STEP.BodyInfo(id: identity, contextID: contextID, unitScaleToMM: scale,
+                                                     unitsAssumed: assumed, uncertaintyMM: tolerances.declaredUncertainty,
+                                                     bounds: bodyBounds, name: bodyName(bodyID)))
             }
         }
         if model.bodies.isEmpty {
@@ -115,8 +126,10 @@ final class STEPEdgeExtractor {
 
     private struct Visit: Hashable { let id: Int; let face: Int? }
 
-    private func collectEdges(bodyID: Int) throws -> [Int: Set<Int>] {
-        var adjacency: [Int: Set<Int>] = [:]
+    /// For every edge reachable from the body: how many times each face uses it. A face that
+    /// uses an edge twice has it as a seam. An edge reached without a face has no entries.
+    private func collectEdges(bodyID: Int) throws -> [Int: [Int: Int]] {
+        var uses: [Int: [Int: Int]] = [:]
         var visited: Set<Visit> = []
         func walk(_ id: Int, face: Int?, ancestors: Set<Int>) throws {
             try Task.checkCancellation()
@@ -124,12 +137,14 @@ final class STEPEdgeExtractor {
                 diagnose(id, "Cyclic/deep topology reference", .warning, code: "topology-cycle")
                 return
             }
-            guard visited.insert(Visit(id: id, face: face)).inserted else { return }
+            // Each ORIENTED_EDGE is walked once per face (below), so every arrival here is one use.
+            // Counting must come before the visited check, which would hide the second use of a seam.
             if file.hasType(id, "EDGE_CURVE") {
-                if adjacency[id] == nil { adjacency[id] = [] }
-                if let face { adjacency[id]?.insert(face) }
+                if uses[id] == nil { uses[id] = [:] }
+                if let face { uses[id]![face, default: 0] += 1 }
                 return
             }
+            guard visited.insert(Visit(id: id, face: face)).inserted else { return }
             var ancestors = ancestors
             ancestors.insert(id)
             do {
@@ -165,10 +180,18 @@ final class STEPEdgeExtractor {
             }
         }
         try walk(bodyID, face: nil, ancestors: [])
-        return adjacency
+        return uses
     }
 
-    private func edge(_ id: Int, body: STEP.BodyID, resolver: STEPCurveResolver, faces: [Int]) throws -> STEP.Edge {
+    /// The name string of a body entity (its first parameter), or `nil` when it is `$` or empty.
+    private func bodyName(_ bodyID: Int) -> String? {
+        guard let part = try? file.components(bodyID).first(where: { Self.bodyTypes.contains($0.type) }),
+              case .string(let name)? = part.parameters.first, !name.isEmpty else { return nil }
+        return name
+    }
+
+    private func edge(_ id: Int, body: STEP.BodyID, resolver: STEPCurveResolver, faces: [Int],
+                      isSeam: Bool) throws -> STEP.Edge {
         let p = try file.parameters(id, type: "EDGE_CURVE")
         let start = try p.reference(at: 1)
         let end = try p.reference(at: 2)
@@ -176,16 +199,18 @@ final class STEPEdgeExtractor {
             throw STEP.ParseError("Invalid EDGE_CURVE same_sense")
         }
         // Vertex order is canonical EDGE_CURVE order, independent of ORIENTED_EDGE uses.
-        let curve = try resolver.resolve(curveID: p.reference(at: 3), startVertexID: start, endVertexID: end,
-                                         sameSense: sense == "T")
-        if let warning = curve.warning { diagnose(id, warning, .warning, code: "chord-cap") }
+        let resolved = try resolver.resolve(curveID: p.reference(at: 3), startVertexID: start, endVertexID: end,
+                                            sameSense: sense == "T")
+        if let warning = resolved.warning { diagnose(id, warning, .warning, code: "chord-cap") }
         return STEP.Edge(id: STEP.EdgeID(importID: model.importID, bodyID: body, entityID: id),
-                        kind: curve.kind,
-                        points: curve.points,
+                        kind: resolved.kind,
+                        points: resolved.points,
                         startVertexID: start,
                         endVertexID: end,
                         adjacentFaceIDs: faces,
-                        chordError: curve.chordError)
+                        chordError: resolved.chordError,
+                        isSeam: isSeam,
+                        curve: resolved.curve)
     }
 
     private var angleScales: [Int: Result<Double, STEP.ParseError>] = [:]

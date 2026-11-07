@@ -93,13 +93,22 @@ extension STEP {
         /// The distance accuracy the file declares for this body's context, in mm. `nil` when it
         /// declares none; the importer then uses its own defaults.
         public let uncertaintyMM: Double?
+        /// Min/max over this body's own edge points, mm, source coordinates. `nil` when none of
+        /// its edges could be extracted. `EdgeModel.bounds` is the union over all bodies.
+        public let bounds: Bounds?
+        /// The name string of the body entity (`MANIFOLD_SOLID_BREP('name', ...)`), as written in
+        /// the file. `nil` when it is `$` or empty. `\X2\...\X0\` style escapes are not decoded.
+        public let name: String?
 
-        public init(id: BodyID, contextID: Int, unitScaleToMM: Double, unitsAssumed: Bool, uncertaintyMM: Double? = nil) {
+        public init(id: BodyID, contextID: Int, unitScaleToMM: Double, unitsAssumed: Bool, uncertaintyMM: Double? = nil,
+                    bounds: Bounds? = nil, name: String? = nil) {
             self.id = id
             self.contextID = contextID
             self.unitScaleToMM = unitScaleToMM
             self.unitsAssumed = unitsAssumed
             self.uncertaintyMM = uncertaintyMM
+            self.bounds = bounds
+            self.name = name
         }
     }
 
@@ -117,6 +126,22 @@ extension STEP {
             case bspline
         }
 
+        /// Analytic description of the curve the polyline samples, where the importer keeps one.
+        /// Everything is millimetres and radians, in source coordinates.
+        public enum Curve: Sendable, Equatable {
+            /// A straight edge; `points` holds its two end points.
+            case line
+            /// A circle or a circular arc. The edge runs from `startAngle` through `sweep`, both
+            /// measured in the frame (angle 0 along `frame.x`, positive towards `frame.y`), so the
+            /// centre is `frame.origin` and the axis `frame.z`. `sweep` is signed: negative runs
+            /// clockwise about `frame.z`. A full circle has `abs(sweep) == 2π`.
+            case circle(frame: Frame, radius: Double, startAngle: Double, sweep: Double)
+            /// Reserved for ellipses and elliptical arcs. Not filled in yet: they report `.other`.
+            case ellipse(frame: Frame, semiAxisX: Double, semiAxisY: Double, startAngle: Double, sweep: Double)
+            /// B-splines, polylines, ellipses (for now): only `points` describes them.
+            case other
+        }
+
         public let id: EdgeID
         public let kind: CurveKind
         /// Polyline in millimetres, source coordinates. At least two points; `first` and `last`
@@ -129,9 +154,15 @@ extension STEP {
         /// Distance (mm) between the sampled polyline and the true curve: a bound for circles
         /// and ellipses, a probed estimate for B-splines. 0 for lines and file polylines.
         public let chordError: Double
+        /// True when one face uses the edge twice, once in each direction: the seam of a cylinder,
+        /// cone, sphere or torus that wraps round its axis. A seam is not a real boundary between
+        /// two surfaces.
+        public let isSeam: Bool
+        /// The exact curve behind `points`; see `Curve`.
+        public let curve: Curve
 
         public init(id: EdgeID, kind: CurveKind, points: [SIMD3<Double>], startVertexID: Int, endVertexID: Int,
-                    adjacentFaceIDs: [Int], chordError: Double = 0) {
+                    adjacentFaceIDs: [Int], chordError: Double = 0, isSeam: Bool = false, curve: Curve = .other) {
             self.id = id
             self.kind = kind
             self.points = points
@@ -139,6 +170,8 @@ extension STEP {
             self.endVertexID = endVertexID
             self.adjacentFaceIDs = adjacentFaceIDs
             self.chordError = chordError
+            self.isSeam = isSeam
+            self.curve = curve
         }
     }
 

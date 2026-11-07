@@ -3,7 +3,7 @@ import simd
 
 extension STEP {
     /// Right-handed orthonormal frame from an AXIS2_PLACEMENT_3D, in millimetres.
-    public struct Frame: Sendable {
+    public struct Frame: Sendable, Equatable {
         public let origin: SIMD3<Double>
         public let x: SIMD3<Double>
         public let y: SIMD3<Double>

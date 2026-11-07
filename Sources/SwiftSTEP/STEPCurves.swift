@@ -151,6 +151,8 @@ struct STEPResolvedCurve {
     let points: [SIMD3<Double>] // mm; first/last are exactly the scaled vertex coordinates
     let chordError: Double
     let warning: String?
+    /// The exact curve, where one is kept; `.other` otherwise.
+    var curve: STEP.Edge.Curve = .other
 }
 
 // MARK: - Resolver
@@ -199,7 +201,7 @@ final class STEPCurveResolver {
             let points = [try vertex(startVertexID), try vertex(endVertexID)]
             guard points[0] != points[1] else { throw STEP.ParseError("Degenerate line edge") }
             try checkVerticesOnLine(basisID, vertexIDs: (startVertexID, endVertexID), points: (points[0], points[1]))
-            return STEPResolvedCurve(kind: .line, points: points, chordError: 0, warning: nil)
+            return STEPResolvedCurve(kind: .line, points: points, chordError: 0, warning: nil, curve: .line)
         }
         if file.hasType(basisID, "CIRCLE") || file.hasType(basisID, "ELLIPSE") {
             let conic = try conicGeometry(basisID)
@@ -287,7 +289,12 @@ final class STEPCurveResolver {
             case (true, true): kind = .ellipse
             case (true, false): kind = .ellipticalArc
         }
-        return STEPResolvedCurve(kind: kind, points: points, chordError: chordError, warning: warning)
+        // Circles keep their exact description; ellipses stay `.other` for now.
+        var exact = STEP.Edge.Curve.other
+        if !conic.isEllipse {
+            exact = .circle(frame: conic.frame, radius: major, startAngle: span.start, sweep: span.sweep)
+        }
+        return STEPResolvedCurve(kind: kind, points: points, chordError: chordError, warning: warning, curve: exact)
     }
 
     // MARK: Bounded curves (polylines, B-splines)
