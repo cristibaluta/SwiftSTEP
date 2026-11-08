@@ -282,27 +282,32 @@ Do these only after the tests in Phase 6 exist, so regressions are caught.
 
 ## Phase 6: tests
 
-### T60. Tokenizer tests (S)
+### T60. Tokenizer tests (S) — DONE
 - Cover `''` inside strings, comments, `1.`, `.5E3`, a lone `-`, an unterminated string, and an invalid reference.
+- Status: done in `STEPTokenizerAndFileTests.swift` (`STEPTokenizerTests`): doubled quotes, comments (also inside strings, unterminated, `/*/`), every number spelling and malformed or overflowing ones, enumerations, references (`#`, `#0`, `#-1`, overflow), words and `!KEYWORD`, every symbol and unexpected bytes, a whole record, the token size limit, a tokenizer over a sub-range. These assume `Double("1.")` and `Double("2.E0")` parse; if one does not, that is a real tokenizer bug. Not built or run (no Swift toolchain here): run `swift test`.
 
-### T61. File-level tests (S)
+### T61. File-level tests (S) — DONE
 - Cover complex entities, a duplicate ID, a truncated file, the nesting limit, an empty file, and the missing `END-ISO-10303-21`.
+- Status: done in the same file (`STEPFileStructureTests`): complex entities (and their 128-component cap, repeated or empty ones), duplicate IDs, the entity cap, nesting at 128 and 129, empty and foreign files (`.notSTEP`), truncation at each stage (`.truncated`), the closing lines, every shorter prefix of a valid file being refused, malformed records (`.malformed`), lazy parameter grammar errors, lookups of what is not there. Not built or run (no Swift toolchain here): run `swift test`.
 
-### T62. Extractor tests (S)
+### T62. Extractor tests (S) — DONE
 - Cover `adjacentFaceIDs`, `skippedEdgeCount`, determinism across two runs with the same `importID`, and bounds for multiple bodies.
+- Status: done in `STEPExtractorTests.swift`: a box's edges each name two different faces and each face is named by four edges, a face with a hole, skipped and unreachable edges, three runs with one `importID` giving identical edges, bodies, diagnostics and bounds, a new `importID` changing only the IDs, edge order, bounds over three bodies across zero, `workpieceOrigin`. Not built or run (no Swift toolchain here): run `swift test`.
 
 ### T63. Tessellator tests (M) — DONE
 - Cover a box (12 triangles per the slab output), a cylinder, a face with a hole, void-shell orientation, the triangle cap, and failed-face handling.
 - Status: done in `STEPTessellatorTests.swift`: box (12 triangles, volume, winding, face ranges), flipped `same_sense`, cylinder (volume, radial normals, tolerance), face with a hole, void shell (volume 5936), unsupported face (partial and strict), triangle cap. The cap needed a way in, so `Options.maximumTriangleCount` (default 1,000,000) is new. `LengthUnit`, `AngleUnit`, `StepBuilder` and `boxBody` in `STEPCurveTests.swift` lost `private` so the new files can use them. Not built or run (no Swift toolchain here): run `swift test`.
 
-### T64. Cancellation tests (S)
+### T64. Cancellation tests (S) — DONE
 - Cancel `STEP.load` mid-parse and expect `CancellationError`.
+- Status: done in `STEPRobustnessTests.swift` (`STEPCancellationTests`). A true mid-parse cancel is a race, so the strict tests start the task already cancelled (it spins until `isCancelled`, then calls the importer) and expect `CancellationError` from `load`, `loadGeometry`, `loadTopology` and the three synchronous readers. One test cancels 5 ms into a 16 MB file and accepts either `CancellationError` or a finished model, but never another error. Not built or run (no Swift toolchain here): run `swift test`.
 
 ### T65. Real-file corpus (M)
 - Add three to five small public STEP files (a NIST model, a multi-body part, a B-spline-heavy part) with golden checks: body count, edge count, bounds, diagnostic count.
 
-### T66. Fuzz test (S)
+### T66. Fuzz test (S) — DONE
 - Mutate bytes of a valid fixture in a loop and assert that the parser throws or returns, and never traps.
+- Status: done in `STEPRobustnessTests.swift` (`STEPFuzzTests`). Seeded SplitMix64, so a run repeats exactly. Mutations: bit flip, replace, delete, insert, cut short, repeat a chunk, and swapping a number for an extreme one (huge, zero, negative, overflow). Fixture: box, cylinder, sphere cap, ellipse, polynomial and rational spline, polyline. Four seeds x 300 mutations of that, 500 of a box, about 150 prefixes, and 5,000 random buffers through `STEPFile` and the tokenizer; `STEP_FUZZ_ITERATIONS=10` multiplies the counts. Every input is written to `swiftstep-fuzz-last-input.step` in the temp folder first, because a trap cannot be caught: if a run dies, that file is the input that killed it. This test is expected to find real bugs (a huge multiplicity or count is the likeliest). Not built or run (no Swift toolchain here): run `swift test`.
 
 ### T67. Linux CI shim (M)
 - Add `#if canImport(simd)` wrappers for the few `simd_*` calls so the package builds and tests on Linux.
