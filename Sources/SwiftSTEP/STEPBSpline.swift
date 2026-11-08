@@ -93,29 +93,29 @@ struct STEPBSpline {
         return low
     }
 
-    /// de Boor in homogeneous coordinates, so rational curves need no separate path.
+    /// Weighted sum of the `degree + 1` control points that matter at `parameter`, in homogeneous
+    /// coordinates so rational curves need no separate path (`STEPBasis`). Allocates nothing: this
+    /// runs thousands of times per edge while sampling and projecting.
     func point(at parameter: Double) -> SIMD3<Double> {
         let range = domain
         let t = min(max(parameter, range.lowerBound), range.upperBound)
         let k = span(for: t)
-        var d: [SIMD4<Double>] = (0...degree).map { j in
-            let index = j + k - degree
-            let w = weights?[index] ?? 1
-            let p = controlPoints[index]
-            return SIMD4(p.x * w, p.y * w, p.z * w, w)
-        }
-        if degree >= 1 {
-            for r in 1...degree {
-                for j in stride(from: degree, through: r, by: -1) {
-                    let i = j + k - degree
-                    let denominator = knots[i + degree + 1 - r] - knots[i]
-                    let alpha = denominator == 0 ? 0 : (t - knots[i]) / denominator
-                    d[j] = (1 - alpha) * d[j - 1] + alpha * d[j]
-                }
+        let p = degree
+        return withUnsafeTemporaryAllocation(of: Double.self, capacity: 4 * (p + 1)) { scratch in
+            let values = scratch.baseAddress!
+            var h = SIMD4<Double>()
+            knots.withUnsafeBufferPointer { knotBuffer in
+                STEPBasis.evaluate(degree: p, knots: knotBuffer, span: k, at: t, values: values,
+                                   derivatives: nil, work: values + (p + 1))
             }
+            for j in 0...p {
+                let index = k - p + j
+                let w = weights?[index] ?? 1
+                let c = controlPoints[index]
+                h += values[j] * SIMD4(c.x * w, c.y * w, c.z * w, w)
+            }
+            return SIMD3(h.x, h.y, h.z) / h.w
         }
-        let h = d[degree]
-        return SIMD3(h.x, h.y, h.z) / h.w
     }
 
     // MARK: Sampling

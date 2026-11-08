@@ -5,9 +5,11 @@ extension STEP {
     /// Tensor-product B-spline surface (optionally rational) in millimetres, for freeform faces.
     ///
     /// Control points, knots and weights come straight from the file; `init` decides whether they
-    /// are usable. Evaluation is de Boor in homogeneous coordinates in v, then u, over only the
-    /// `(degree + 1)` control points that matter at (u, v), so rational surfaces need no separate
-    /// path and one evaluation is cheap enough for projecting every boundary point of a face.
+    /// are usable. Evaluation sums the `(degree + 1)` control points that matter at (u, v), in
+    /// homogeneous coordinates, with the basis functions of each direction (`STEPBasis`), so
+    /// rational surfaces need no separate path, one evaluation allocates nothing, and the exact
+    /// first derivatives cost about the same as the point. That is cheap enough for projecting every
+    /// boundary point of a face and for a normal at every vertex.
     ///
     /// The parametrisation is the file's own: u and v run over the knot domains, and
     /// `∂P/∂u × ∂P/∂v` is the STEP surface normal, like every other `STEP.Surface`.
@@ -147,52 +149,80 @@ extension STEP {
             return low
         }
 
-        /// de Boor over the `degree + 1` homogeneous points `d` that belong to control indices
-        /// `k - degree ... k`.
-        private static func deBoor(degree: Int, knots: [Double], span k: Int, at t: Double,
-                                   _ d: inout [SIMD4<Double>]) -> SIMD4<Double> {
-            for r in 1...degree {
-                for j in stride(from: degree, through: r, by: -1) {
-                    let i = j + k - degree
-                    let denominator = knots[i + degree + 1 - r] - knots[i]
-                    let alpha = denominator == 0 ? 0 : (t - knots[i]) / denominator
-                    d[j] = (1 - alpha) * d[j - 1] + alpha * d[j]
-                }
-            }
-            return d[degree]
-        }
-
         // MARK: Evaluation
 
-        /// Surface point; parameters outside the domain are clamped to it.
-        public func point(u: Double, v: Double) -> SIMD3<Double> {
+        /// The homogeneous surface point and, when asked for, its partial derivatives.
+        private struct Homogeneous {
+            var point = SIMD4<Double>()
+            var du = SIMD4<Double>()
+            var dv = SIMD4<Double>()
+        }
+
+        private func evaluate(u: Double, v: Double, derivatives wanted: Bool) -> Homogeneous {
             let uc = min(max(u, uDomain.lowerBound), uDomain.upperBound)
             let vc = min(max(v, vDomain.lowerBound), vDomain.upperBound)
             let ku = Self.span(uKnots, degree: uDegree, count: uCount, at: uc)
             let kv = Self.span(vKnots, degree: vDegree, count: vCount, at: vc)
-            var column: [SIMD4<Double>] = []
-            column.reserveCapacity(uDegree + 1)
-            for a in 0...uDegree {
-                let row = (ku - uDegree + a) * vCount
-                var local: [SIMD4<Double>] = []
-                local.reserveCapacity(vDegree + 1)
-                for b in 0...vDegree { local.append(controls[row + kv - vDegree + b]) }
-                column.append(Self.deBoor(degree: vDegree, knots: vKnots, span: kv, at: vc, &local))
+            let p = uDegree
+            let q = vDegree
+            let uScratch = STEPBasis.scratchCount(degree: p)
+            return withUnsafeTemporaryAllocation(of: Double.self, capacity: uScratch + STEPBasis.scratchCount(degree: q)) { scratch in
+                let base = scratch.baseAddress!
+                let nu = base
+                let du = base + (p + 1)
+                let nv = base + uScratch
+                let dv = nv + (q + 1)
+                var result = Homogeneous()
+                uKnots.withUnsafeBufferPointer { uk in
+                    vKnots.withUnsafeBufferPointer { vk in
+                        controls.withUnsafeBufferPointer { control in
+                            STEPBasis.evaluate(degree: p, knots: uk, span: ku, at: uc, values: nu,
+                                               derivatives: wanted ? du : nil, work: base + 2 * (p + 1))
+                            STEPBasis.evaluate(degree: q, knots: vk, span: kv, at: vc, values: nv,
+                                               derivatives: wanted ? dv : nil, work: nv + 2 * (q + 1))
+                            for a in 0...p {
+                                let row = (ku - p + a) * vCount + kv - q
+                                var along = SIMD4<Double>()
+                                var across = SIMD4<Double>()
+                                for b in 0...q {
+                                    let point = control[row + b]
+                                    along += nv[b] * point
+                                    if wanted { across += dv[b] * point }
+                                }
+                                result.point += nu[a] * along
+                                if wanted {
+                                    result.du += du[a] * along
+                                    result.dv += nu[a] * across
+                                }
+                            }
+                        }
+                    }
+                }
+                return result
             }
-            let h = Self.deBoor(degree: uDegree, knots: uKnots, span: ku, at: uc, &column)
+        }
+
+        /// Surface point; parameters outside the domain are clamped to it.
+        public func point(u: Double, v: Double) -> SIMD3<Double> {
+            let h = evaluate(u: u, v: v, derivatives: false).point
             return SIMD3(h.x, h.y, h.z) / h.w
         }
 
-        /// Central differences over a step of 1e-5 of the domain, one-sided at its edges.
+        /// The point and its exact partial derivatives `∂P/∂u` and `∂P/∂v` (quotient rule on the
+        /// homogeneous sums). At a knot where the surface is not smooth the derivative is the
+        /// one of the span that starts there (the last span, at the end of the domain).
+        func frame(u: Double, v: Double) -> (point: SIMD3<Double>, du: SIMD3<Double>, dv: SIMD3<Double>) {
+            let e = evaluate(u: u, v: v, derivatives: true)
+            let w = e.point.w
+            let point = SIMD3(e.point.x, e.point.y, e.point.z) / w
+            let du = (SIMD3(e.du.x, e.du.y, e.du.z) - point * e.du.w) / w
+            let dv = (SIMD3(e.dv.x, e.dv.y, e.dv.z) - point * e.dv.w) / w
+            return (point, du, dv)
+        }
+
         func derivatives(u: Double, v: Double) -> (du: SIMD3<Double>, dv: SIMD3<Double>) {
-            let uLength = uDomain.upperBound - uDomain.lowerBound
-            let vLength = vDomain.upperBound - vDomain.lowerBound
-            let u0 = max(u - 1e-5 * uLength, uDomain.lowerBound)
-            let u1 = min(u + 1e-5 * uLength, uDomain.upperBound)
-            let v0 = max(v - 1e-5 * vLength, vDomain.lowerBound)
-            let v1 = min(v + 1e-5 * vLength, vDomain.upperBound)
-            return ((point(u: u1, v: v) - point(u: u0, v: v)) / (u1 - u0),
-                    (point(u: u, v: v1) - point(u: u, v: v0)) / (v1 - v0))
+            let f = frame(u: u, v: v)
+            return (f.du, f.dv)
         }
 
         /// Unit `∂P/∂u × ∂P/∂v`. Where that vanishes (a singular point) the normal is taken a
@@ -246,8 +276,9 @@ extension STEP {
             let vLength = vDomain.upperBound - vDomain.lowerBound
 
             for _ in 0..<50 {
-                let residual = point(u: u, v: v) - target
-                let d = derivatives(u: u, v: v)
+                let here = frame(u: u, v: v)
+                let residual = here.point - target
+                let d = (du: here.du, dv: here.dv)
                 let a = simd_dot(d.du, d.du)
                 let b = simd_dot(d.du, d.dv)
                 let c = simd_dot(d.dv, d.dv)

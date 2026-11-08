@@ -243,35 +243,38 @@ Each task is small and self-contained, so it can be done in one short session.
 
 Do these only after the tests in Phase 6 exist, so regressions are caught.
 
-### T50. Benchmark harness (S)
+### T50. Benchmark harness (S) — DONE
 - Files: new test or script
 - Do: generate a synthetic 50 MB STEP (many planes and circles) and time `STEPFile.init` and a full `read`.
 - Done when: it prints timings and peak memory. This becomes the baseline for T51 to T55.
+- Status: done in `STEPBenchmarkTests.swift`, off unless `STEP_BENCHMARK=1`. Run `STEP_BENCHMARK=1 swift test -c release -Xswiftc -enable-testing --filter STEPBenchmark` (release matters: Debug is often 10 to 50 times slower for this code). Four benchmarks: a synthetic file of boxes (`STEP_BENCHMARK_MB`, default 20) timing `STEPFile.init`, `STEP.read`, `readGeometry` and peak memory; every file in `Sources/SwiftSTEPDemo/Samples` with edges-only and with-surfaces times; the cost of one `point`, `normal`, projection and `divisions` call on the first freeform face of `loft_transition.step`; a degree 9 curve's point and `sample`. Not built or run (no Swift toolchain here).
+- Finding that shapes the rest of Phase 5: `loft_transition.step` is 45 KB. Indexing and reading a file that small takes milliseconds, so T51 to T54 cannot be why it takes seconds to draw. Its five surfaces are B-splines of degree 9 x 2, and the time is spent evaluating them: `divisions` probes thousands of points, every tessellated vertex needs a point and a normal (the normal used four more point evaluations by finite differences), and every boundary point is projected onto the surface by Gauss-Newton at about six evaluations per step, and each evaluation allocated about eleven small arrays.
 
-### T51. Byte-scanning indexer (M)
+### T51. Byte-scanning indexer (M) — NOT DONE, wait for T50 numbers on a big file
 - Files: `STEPFile.swift`, `STEPTokenizer.swift`
 - Do: replace `componentRange` with a scanner that tracks only quotes, comments and parentheses.
 - Done when: the same entities are indexed and T50 shows a clear speed-up.
 
-### T52. Unsafe-buffer lexing (M)
+### T52. Unsafe-buffer lexing (M) — NOT DONE, wait for T50 numbers on a big file
 - Files: `STEPTokenizer.swift`
 - Do: scan through `withUnsafeBytes` instead of `Data` subscripting.
 - Done when: all tests pass and T50 improves.
 
-### T53. Intern entity types (M)
+### T53. Intern entity types (M) — NOT DONE, wait for T50 numbers on a big file
 - Files: `STEPFile.swift`, callers of `hasType` and `entities`
 - Do: map type names to small integers at index time and bucket entity IDs by type.
 - Done when: `entities(ofTypes:)` no longer scans the whole index.
 
-### T54. Cache eviction (S)
+### T54. Cache eviction (S) — NOT DONE, wait for T50 numbers on a big file
 - Files: `STEPFile.swift`
 - Do: cap the component cache (for example by entry count) and clear it between bodies.
 - Done when: peak memory in T50 drops with identical output.
 
-### T55. Allocation-free de Boor (S)
+### T55. Allocation-free de Boor (S) — DONE
 - Files: `STEPBSpline.swift`
 - Do: use `withUnsafeTemporaryAllocation` (or a fixed buffer) in `point(at:)`.
 - Done when: the spline tests pass and sampling a dense spline is faster.
+- Status: done, and taken further because the loft sample needs it. New `STEPBasis.swift` computes the basis functions of a span once per direction (and, when asked, their exact first derivatives) in a stack buffer (`withUnsafeTemporaryAllocation`). `STEPBSpline.point(at:)` and `BSplineSurface.point(u:v:)` sum the control points with them: no heap allocation, and for a surface the v-direction knot arithmetic is done once instead of once per row. `BSplineSurface.frame(u:v:)` gives the point and exact `∂P/∂u`, `∂P/∂v` in one pass, and `derivatives`, `normal` and the Gauss-Newton projection use it: a normal is one evaluation instead of five, a projection step one instead of six. Checked in a Python port against the old evaluator on 400 random surfaces (degrees 1 to 9, rational, repeated knots): points agree to 5e-15 and derivatives to 3e-9 of a central difference. One deliberate change: at a knot where the surface is only C0 the derivative (so the normal) is now that of the span starting there, not the average of both sides. Tests: `STEPBSplineEvaluationTests` against a Cox-de Boor reference, a degree 25 line (Greville points), clamping, the end-of-domain derivative, projection. Not built or run (no Swift toolchain here): run `swift test`, then the benchmark before and after to see the real gain.
 
 ### T56. Progress reporting (M)
 - Files: `STEP.swift`, `STEPFile.swift`, `STEPEdgeImporter.swift`
