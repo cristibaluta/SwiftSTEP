@@ -256,13 +256,20 @@ extension STEP {
         /// behind it show as visible. Set `false` to leave such a body without any mesh, as in
         /// earlier versions, for callers that must never classify an edge as visible by mistake.
         public var keepPartialSurfaces: Bool
+        /// `readGeometry` only. Most triangles the whole import may produce. The renderer keeps a CPU
+        /// and a GPU copy of every triangle (roughly 150 bytes each), so the default of one million
+        /// bounds the extra memory to a few hundred MB. A face that would go over the cap fails like
+        /// any other face that cannot be tessellated.
+        public var maximumTriangleCount: Int
 
         public init(assumedUnitScaleToMM: Double? = nil, chordToleranceMM: Double = 0.01,
-                    maximumEntityCount: Int = 2_000_000, keepPartialSurfaces: Bool = true) {
+                    maximumEntityCount: Int = 2_000_000, keepPartialSurfaces: Bool = true,
+                    maximumTriangleCount: Int = 1_000_000) {
             self.assumedUnitScaleToMM = assumedUnitScaleToMM
             self.chordToleranceMM = chordToleranceMM
             self.maximumEntityCount = maximumEntityCount
             self.keepPartialSurfaces = keepPartialSurfaces
+            self.maximumTriangleCount = maximumTriangleCount
         }
     }
 

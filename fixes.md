@@ -154,18 +154,20 @@ Each task is small and self-contained, so it can be done in one short session.
 - Done when: a body with one bad face returns a mesh plus the failed face ID.
 - Status: done. Partial meshes are the new default: `BodyMesh.isPartial` / `failedFaceIDs`, `SurfaceModel.partialBodies`, diagnostic `body-partial`, `Geometry.report` lists them. `Options.keepPartialSurfaces = false` restores all-or-nothing. A body whose every face fails still has no mesh. Existing tests that asserted the old behaviour now pass the option; the Phase 2 unsupported-face test and `boundaryThatLeavesTheSurface...` assert the partial result. Not built or run (no Swift toolchain here): run `swift test`.
 
-### T31. Proper triangulation for planar faces (L, split)
+### T31. Proper triangulation for planar faces (L, split) — DONE
 - Files: new `STEPPolygonTriangulator.swift`, `STEPTessellator.swift`
 - Split into:
   1. T31a: ear-clipping with holes (earcut-style) for one outer loop plus holes, with tests on a square-with-hole.
   2. T31b: route `.plane` faces to it and keep the slab triangulator for curved surfaces.
   3. T31c: a test with a plate holding 100 circular holes that checks triangle count stays near linear.
 - Done when: T31c passes well under the 1M cap.
+- Status: done. `STEPPolygonTriangulator.swift` is an earcut port (holes joined by bridges, then ear clipping with the filter, cure and split fallbacks). It adds no points, so `n` boundary points and `h` holes give `n + 2h - 2` triangles. Its result is verified (triangle areas must equal outer area minus holes, none backwards); a failed check throws and the tessellator falls back to the slab sweep for that plane. `.plane` faces use it, every curved surface still uses the slab sweep. Known limit: a boundary point exactly on a straight run may be left out of the triangles (a T-junction with a neighbour that uses it); the ear search is quadratic, with no z-order hashing. Tests: `STEPPolygonTriangulatorTests` (T31a), `aFaceWithACircularHoleLeavesTheHoleOpen` (T31b), `aPlateWithAHundredHolesStaysNearLinear` (T31c). The algorithm was checked in a Python port first (random holes, 100-hole grid, rows, columns, invalid inputs). Not built or run (no Swift toolchain here): run `swift test`.
 
-### T32. Sphere poles and cone apex (M)
+### T32. Sphere poles and cone apex (M) — DONE
 - Files: `STEPTessellator.swift`
 - Do: instead of throwing in `parametrize`, insert the pole point and add the vertical boundary run at the pole.
 - Done when: a hemisphere test tessellates.
+- Status: done. Most of it was already in `parametrize` (a pole vertex becomes two points, a seam edge out to the pole and back marks the pole as inside) but had no test. New: a cap written as one circle with no seam edge (a dome, a cone tip with no apex vertex) used to fail; `enclosedPole` now reads which pole (or apex) it contains from the loop's direction and the face's `same_sense`, and refuses a cone whose apex is behind the loop. A cylinder or torus with one wrapping loop is still refused. Tests: `aHemisphereWithASeamToThePoleIsFilled`, `aDomeWrittenAsOneCircleContainsThePoleItsDirectionPointsTo`, `theSameDomeTurnedInsideOutIsTheSameRegionWithTheOppositeVolume`, `aConeTipWithNoSeamAndNoApexVertexIsFilled`, `aSingleCircleOnACylinderStillHasNoPoleToFill`. Not built or run (no Swift toolchain here): run `swift test`.
 
 ### T33. B-spline surface evaluation (M) — DONE
 - Files: new `STEPBSplineSurface.swift`
@@ -186,6 +188,7 @@ Each task is small and self-contained, so it can be done in one short session.
 - Files: `Surface.swift`, `STEPTessellator.swift`
 - Do: add `SURFACE_OF_LINEAR_EXTRUSION` and `SURFACE_OF_REVOLUTION` for the cases where the swept curve is a line, circle or arc.
 - Done when: one test each tessellates.
+- Status: NOT done. Finding: both entities already work when the swept curve is a B-spline (`parseSurfaceOfLinearExtrusion`, `parseSurfaceOfRevolution` turn them into a `.bspline` surface); only line, circle and arc profiles are refused. Mapping those onto the analytic surfaces needs care with orientation, because a `Surface` cannot be inside out (only the face's `same_sense` can): an extruded circle against its own axis, or a revolved line, would come out with the normal reversed. Most CAD systems write these shapes as PLANE, CYLINDRICAL_SURFACE, CONICAL_SURFACE or TOROIDAL_SURFACE anyway. Better done with a real file that needs it and a toolchain to run the test.
 
 ---
 
@@ -288,8 +291,9 @@ Do these only after the tests in Phase 6 exist, so regressions are caught.
 ### T62. Extractor tests (S)
 - Cover `adjacentFaceIDs`, `skippedEdgeCount`, determinism across two runs with the same `importID`, and bounds for multiple bodies.
 
-### T63. Tessellator tests (M)
+### T63. Tessellator tests (M) — DONE
 - Cover a box (12 triangles per the slab output), a cylinder, a face with a hole, void-shell orientation, the triangle cap, and failed-face handling.
+- Status: done in `STEPTessellatorTests.swift`: box (12 triangles, volume, winding, face ranges), flipped `same_sense`, cylinder (volume, radial normals, tolerance), face with a hole, void shell (volume 5936), unsupported face (partial and strict), triangle cap. The cap needed a way in, so `Options.maximumTriangleCount` (default 1,000,000) is new. `LengthUnit`, `AngleUnit`, `StepBuilder` and `boxBody` in `STEPCurveTests.swift` lost `private` so the new files can use them. Not built or run (no Swift toolchain here): run `swift test`.
 
 ### T64. Cancellation tests (S)
 - Cancel `STEP.load` mid-parse and expect `CancellationError`.

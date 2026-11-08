@@ -6,6 +6,9 @@ import simd
 /// Turns the faces of each body into triangles, reusing the wireframe's sampled edges as
 /// face boundaries so faces and edges agree exactly.
 ///
+/// Planes (outer loop with holes) go through `STEPPolygonTriangulator`, which adds no points; every
+/// curved surface goes through the slab sweep, which has to.
+///
 /// Supported: planes (outer loop with holes) and cylinders, cones, spheres and tori trimmed
 /// by their loops, including faces that wrap the whole axis (a cylinder between two
 /// circles) and the seam-edge form of the same, and freeform faces on a
@@ -13,14 +16,17 @@ import simd
 /// surfaces (revolution, linear extrusion), B-splines without explicit knots or that close on
 /// themselves or have a collapsed side, vertex or polyline loops, oriented faces. A face may
 /// contain a sphere's pole or a cone's apex when its seam edge runs out to it and back (a
-/// hemisphere, say), or touch it at a loop vertex; one that winds round a pole with no seam
-/// edge to say which pole is not supported yet. Any such face drops the whole body's surface,
-/// with a diagnostic.
+/// hemisphere, say), or touch it at a loop vertex. A cap written as one circle with no seam
+/// (a dome, a cone's tip) is read as containing the pole on the side the loop's direction and
+/// the face's sense point to. Several loops that wind round a pole with no seam edge are not
+/// supported yet. A face that fails drops only itself unless `Options.keepPartialSurfaces` is
+/// off, with a diagnostic.
 ///
 /// Task-confined like `STEPFile`; use through `STEPEdgeImporter.parseGeometry`.
 final class STEPTessellator {
-    /// Cap for the whole import. The renderer keeps a CPU and a GPU copy of every triangle,
-    /// roughly 150 bytes each, so this bounds the extra memory to a few hundred MB.
+    /// Default cap for the whole import (`Options.maximumTriangleCount`). The renderer keeps a CPU
+    /// and a GPU copy of every triangle, roughly 150 bytes each, so this bounds the extra memory to a
+    /// few hundred MB.
     static let maximumTriangles = 1_000_000
 
     private let file: STEPFile
@@ -32,7 +38,7 @@ final class STEPTessellator {
     /// Rebuilt for each body from the accuracy its context declares.
     private var tolerances: STEPTolerances
     private var surfaces: STEP.SurfaceModel
-    private var triangleBudget = STEPTessellator.maximumTriangles
+    private var triangleBudget: Int
 
     init(file: STEPFile, model: STEP.EdgeModel, options: STEP.Options) {
         self.file = file
@@ -42,6 +48,7 @@ final class STEPTessellator {
         keepPartial = options.keepPartialSurfaces
         tolerances = STEPTolerances(chord: options.chordToleranceMM)
         surfaces = STEP.SurfaceModel(origin: model.bounds?.workpieceOrigin ?? .zero)
+        triangleBudget = max(0, options.maximumTriangleCount)
     }
 
     func tessellate() throws -> STEP.SurfaceModel {
@@ -373,13 +380,21 @@ final class STEPTessellator {
             }
             loops.append(try parametrize(loop.points, on: surface))
         }
-        let segments = try boundarySegments(loops, poles: poles, surface: surface)
-        let vValues = segments.flatMap { [$0.a.v, $0.b.v] }
-        guard let vLow = vValues.min(), let vHigh = vValues.max() else { throw STEP.ParseError("Face has no boundary") }
-
-        let result = try STEPSlabTriangulator.triangulate(segments,
+        var planar: STEPSlabTriangulator.Result?
+        if case .plane = surface, poles.isEmpty {
+            planar = try triangulatePlane(loops)
+        }
+        let result: STEPSlabTriangulator.Result
+        if let planar {
+            result = planar
+        } else {
+            let segments = try boundarySegments(loops, poles: poles, surface: surface, sameSense: parsed.sameSense)
+            let vValues = segments.flatMap { [$0.a.v, $0.b.v] }
+            guard let vLow = vValues.min(), let vHigh = vValues.max() else { throw STEP.ParseError("Face has no boundary") }
+            result = try STEPSlabTriangulator.triangulate(segments,
                                                           sampling: sampling(for: surface, vRange: vLow...vHigh),
                                                           triangleLimit: triangleBudget)
+        }
         triangleBudget -= result.triangles.count
 
         // The surface normal is a face's front unless same_sense is false; a reversed shell
@@ -409,15 +424,42 @@ final class STEPTessellator {
                                        triangles: firstTriangle..<(firstTriangle + result.triangles.count)))
     }
 
+    /// A plane needs no interior points, so its region is triangulated from the boundary alone:
+    /// the largest loop is the outer one and every other loop a hole. `nil` when that fails (loops
+    /// that touch or cross); the caller then uses the slab sweep, which copes with those.
+    private func triangulatePlane(_ loops: [ParamLoop]) throws -> STEPSlabTriangulator.Result? {
+        guard let outerIndex = loops.indices.max(by: {
+            abs(STEPPolygonTriangulator.signedArea(loops[$0].vertices))
+                < abs(STEPPolygonTriangulator.signedArea(loops[$1].vertices))
+        }) else { return nil }
+        var holes: [[STEPSlabTriangulator.Vertex]] = []
+        for index in loops.indices where index != outerIndex { holes.append(loops[index].vertices) }
+        do {
+            return try STEPPolygonTriangulator.triangulate(outer: loops[outerIndex].vertices, holes: holes,
+                                                           triangleLimit: triangleBudget)
+        } catch let error as STEP.ParseError {
+            // Running out of triangles is the same answer from the slab sweep, so it is not retried.
+            if error.description.contains("Triangle limit") { throw error }
+            return nil
+        }
+    }
+
     /// The face's region as plain segments in (u, v): every closed loop as it is, or, for a face
     /// that goes all the way round its axis, the two wrapping loops cut to one period.
-    private func boundarySegments(_ loops: [ParamLoop], poles: [STEPSlabTriangulator.Vertex],
-                                  surface: STEP.Surface) throws -> [STEPSlabTriangulator.Segment] {
+    private func boundarySegments(_ loops: [ParamLoop], poles knownPoles: [STEPSlabTriangulator.Vertex],
+                                  surface: STEP.Surface, sameSense: Bool) throws -> [STEPSlabTriangulator.Segment] {
         guard loops.allSatisfy({ $0.windingV == 0 }) else {
             throw STEP.ParseError("Face wraps round the \(surface.kindName)'s tube; not supported yet")
         }
         let wrapping = loops.filter { $0.windingU != 0 }
         let plain = loops.filter { $0.windingU == 0 }
+        var poles = knownPoles
+        // A cap written as one circle with no seam edge (a dome, a cone's tip) does not say which
+        // pole it contains; the loop's direction and the face's sense do.
+        if poles.isEmpty, wrapping.count == 1, abs(wrapping[0].windingU) == 1,
+           let pole = Self.enclosedPole(of: wrapping[0], on: surface, sameSense: sameSense) {
+            poles = [pole]
+        }
 
         if wrapping.isEmpty, surface.isPeriodicU, poles.count >= 2,
            let low = poles.min(by: { $0.v < $1.v }), let high = poles.max(by: { $0.v < $1.v }), high.v - low.v > 1e-6 {
@@ -528,6 +570,37 @@ final class STEPTessellator {
             segments.append(contentsOf: try align(loop, surface: surface, referenceU: window, referenceV: vLow...vHigh).segments)
         }
         return segments
+    }
+
+    /// The pole (sphere) or apex (cone) inside a face whose only wrapping loop goes once round the
+    /// axis. A face keeps its interior on the left of its boundary when seen from the side its
+    /// normal points to, and (u, v) is drawn so that is the side `∂P/∂u × ∂P/∂v` points to; so for
+    /// `same_sense` true a loop running towards +u has +v on its left, and for false the reverse.
+    /// `nil` when the surface has no pole on that side (a cylinder, a torus, a cone whose apex is
+    /// behind the loop), which leaves the face unsupported as before.
+    private static func enclosedPole(of loop: ParamLoop, on surface: STEP.Surface,
+                                     sameSense: Bool) -> STEPSlabTriangulator.Vertex? {
+        let towardPositiveV = (loop.windingU > 0) == sameSense
+        let poleV: Double
+        switch surface {
+            case .sphere:
+                poleV = towardPositiveV ? 0.5 * .pi : -0.5 * .pi
+            case .cone(_, let radius, let halfAngle):
+                let slope = tan(halfAngle)
+                guard abs(slope) > 1e-9 else { return nil }
+                poleV = -radius / slope
+                // The apex must lie beyond the whole loop, on the side the face is on.
+                let slack = 1e-6 * max(1, abs(poleV))
+                if towardPositiveV {
+                    guard poleV >= loop.vRange.upperBound - slack else { return nil }
+                } else {
+                    guard poleV <= loop.vRange.lowerBound + slack else { return nil }
+                }
+            default:
+                return nil
+        }
+        guard poleV.isFinite else { return nil }
+        return STEPSlabTriangulator.Vertex(u: 0, v: poleV, position: surface.point(u: 0, v: poleV))
     }
 
     private static func area(_ loop: ParamLoop) -> Double {

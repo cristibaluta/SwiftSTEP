@@ -6,15 +6,15 @@ import simd
 // Fixtures are generated, topologically minimal Part 21 files: the extractor only walks
 // body → shell → face → loop → oriented edge → edge, so an arc can sit alone in a loop.
 
-private enum LengthUnit {
+enum LengthUnit {
     case millimetre, metre, inch
 }
 
-private enum AngleUnit {
+enum AngleUnit {
     case radian, degree, none
 }
 
-private final class StepBuilder {
+final class StepBuilder {
     private var lines: [String] = []
     private var next = 1
     private let lengthUnit: LengthUnit
@@ -1196,7 +1196,7 @@ struct STEPPhase1Tests {
 /// A 10 × 20 × 30 box by default: 8 vertices, 12 line edges, 6 planar faces of four edges each.
 /// Corner `i` has x = i & 1, y = (i >> 1) & 1, z = (i >> 2) & 1 (as 0 or the full size). Every face
 /// runs counter-clockwise seen from outside, so neighbours use their shared edge in opposite directions.
-private func boxBody(_ b: StepBuilder, origin: SIMD3<Double> = .zero, size: SIMD3<Double> = SIMD3(10, 20, 30),
+func boxBody(_ b: StepBuilder, origin: SIMD3<Double> = .zero, size: SIMD3<Double> = SIMD3(10, 20, 30),
                      name: String = "") -> StepBuilder.BodySpec {
     func corner(_ i: Int) -> SIMD3<Double> {
         origin + SIMD3(i & 1 == 0 ? 0 : size.x, i & 2 == 0 ? 0 : size.y, i & 4 == 0 ? 0 : size.z)
