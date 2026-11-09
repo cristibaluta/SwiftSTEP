@@ -50,6 +50,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     private var center = SIMD3<Float>.zero
     private var radius: Float = 1
     private var needsFit = false
+    private var awaitingFirstFrame = false
 
     private let edgeColor = SIMD4<Float>(0.08, 0.09, 0.10, 1)
     // Faces sit a hair behind the edges drawn on them, so the edges win the depth test.
@@ -140,6 +141,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         indexCount = 0
         pieces = []
         guard let document else { return }
+        LoadClock.shared.mark("SwiftUI hands document to renderer")
 
         // Every body's edges (Double) and mesh (Float) are in assembly coordinates; the mesh positions
         // are relative to `assembly.origin`, so the edges are brought to the same origin before
@@ -174,11 +176,14 @@ final class Renderer: NSObject, MTKViewDelegate {
                                 lineStart: lineStart, lineCount: lines.count - lineStart))
         }
 
+        LoadClock.shared.mark("pack vertex/index arrays")
         lineVertexCount = lines.count
         lineBuffer = makeBuffer(lines)
         solidBuffer = makeBuffer(vertices)
         indexBuffer = makeBuffer(indices)
         indexCount = indices.count
+        LoadClock.shared.mark("upload buffers to GPU")
+        awaitingFirstFrame = true
 
         if let bounds = assembly.bounds {
             center = SIMD3<Float>((bounds.min + bounds.max) / 2 - origin)
@@ -258,6 +263,14 @@ final class Renderer: NSObject, MTKViewDelegate {
 
         encoder.endEncoding()
         if let drawable = view.currentDrawable { commandBuffer.present(drawable) }
+        if awaitingFirstFrame {
+            awaitingFirstFrame = false
+            LoadClock.shared.mark("wait for first draw + encode")
+            commandBuffer.addCompletedHandler { _ in
+                LoadClock.shared.mark("GPU renders first frame")
+                LoadClock.shared.finish()
+            }
+        }
         commandBuffer.commit()
     }
 }

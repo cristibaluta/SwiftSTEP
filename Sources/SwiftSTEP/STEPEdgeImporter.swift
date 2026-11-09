@@ -48,22 +48,43 @@ enum STEPEdgeImporter {
     static func parseAssembly(data: Data, importID: UUID = UUID(), options: STEP.Options = STEP.Options(),
                               includeSurfaces: Bool = true) throws -> STEP.Assembly {
         try Task.checkCancellation()
-        let file = try openFile(data, options)
-        let edges = try STEPEdgeExtractor(file: file, importID: importID, options: options,
-                                          reportsAssembly: false).extract()
+        let clock = ContinuousClock()
+        var timings: [STEP.StageTiming] = []
+        func timed<T>(_ name: String, _ work: () throws -> T) rethrows -> T {
+            let start = clock.now
+            defer {
+                let d = start.duration(to: clock.now)
+                timings.append(STEP.StageTiming(name: name, seconds: Double(d.components.seconds)
+                                                + Double(d.components.attoseconds) / 1e18))
+            }
+            return try work()
+        }
+
+        let file = try timed("index Part 21") { try openFile(data, options) }
+        let edges = try timed("extract edges") {
+            try STEPEdgeExtractor(file: file, importID: importID, options: options, reportsAssembly: false).extract()
+        }
         var surfaces: STEP.SurfaceModel?
         if includeSurfaces {
-            do {
-                surfaces = try STEPTessellator(file: file, model: edges, options: options).tessellate()
-            } catch let error as STEP.ParseError {
-                var unavailable = STEP.SurfaceModel()
-                unavailable.diagnostics = [STEP.Diagnostic(entityID: nil, message: "Surfaces unavailable: \(error.description)",
-                                                          severity: .warning, code: "surfaces-unavailable")]
-                surfaces = unavailable
+            surfaces = try timed("tessellate faces") {
+                do {
+                    return try STEPTessellator(file: file, model: edges, options: options).tessellate()
+                } catch let error as STEP.ParseError {
+                    var unavailable = STEP.SurfaceModel()
+                    unavailable.diagnostics = [STEP.Diagnostic(entityID: nil, message: "Surfaces unavailable: \(error.description)",
+                                                              severity: .warning, code: "surfaces-unavailable")]
+                    return unavailable
+                }
             }
         }
-        let resolution = try STEPAssemblyResolver(file: file, model: edges, options: options).resolve()
-        return try STEP.Assembly.assemble(edges: edges, surfaces: surfaces, resolution: resolution, options: options)
+        let resolution = try timed("resolve placements") {
+            try STEPAssemblyResolver(file: file, model: edges, options: options).resolve()
+        }
+        var assembly = try timed("place bodies") {
+            try STEP.Assembly.assemble(edges: edges, surfaces: surfaces, resolution: resolution, options: options)
+        }
+        assembly.timings = timings
+        return assembly
     }
 
     /// Runs `work` on a detached task so it never inherits an actor, and forwards cancellation.

@@ -49,6 +49,13 @@ extension STEP {
         }
     }
 
+    /// How long one stage of an import took (wall clock, on the worker thread).
+    public struct StageTiming: Sendable {
+        public let name: String
+        public let seconds: Double
+        public init(name: String, seconds: Double) { self.name = name; self.seconds = seconds }
+    }
+
     /// Every body of a file in one coordinate system. This is the result of `STEP.readAssembly`;
     /// `STEP.readBodies` returns just `bodies`.
     ///
@@ -70,6 +77,8 @@ extension STEP {
         /// Placements read from the file and used (assembly usages or mapped items).
         public internal(set) var placementCount = 0
         public internal(set) var indexedEntityCount = 0
+        /// Where the import spent its time, in order: index the file, edges, surfaces, placements, placing bodies.
+        public internal(set) var timings: [StageTiming] = []
         /// The parts before placement, for `report`.
         let prototype: Geometry?
 

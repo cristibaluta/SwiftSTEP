@@ -82,10 +82,10 @@ final class Viewer: ObservableObject {
         started = true
         if let path = CommandLine.arguments.dropFirst().first(where: { FileManager.default.fileExists(atPath: $0) }) {
             open(URL(fileURLWithPath: path))
-        } else if let sample = samples.first(where: { $0.lastPathComponent == "die_cube.step" }) ?? samples.first {
+        } else if let sample = samples.first(where: { $0.lastPathComponent == "assembly_nauo.step" }) ?? samples.first {
             openSample(sample)
         } else {
-            let message = "The bundled sample die_cube.step is missing from the resource bundle "
+            let message = "The bundled sample assembly_nauo.step is missing from the resource bundle "
                 + "(\(Bundle.module.bundlePath)). Check that Package.swift lists it under `resources:`."
             FileHandle.standardError.write(Data("SwiftSTEPDemo: \(message)\n".utf8))
             errorMessage = message
@@ -94,6 +94,7 @@ final class Viewer: ObservableObject {
 
     func open(_ url: URL) {
         loadTask?.cancel()
+        LoadClock.shared.begin(url.lastPathComponent)
         loadTask = Task {
             let scoped = url.startAccessingSecurityScopedResource()
             defer { if scoped { url.stopAccessingSecurityScopedResource() } }
@@ -102,10 +103,14 @@ final class Viewer: ObservableObject {
                 // assembly comes back as an array of bodies, each placed in assembly coordinates.
                 let assembly = try await STEP.loadAssembly(contentsOf: url)
                 try Task.checkCancellation()
+                LoadClock.shared.mark("STEP.loadAssembly (read file + library, see breakdown)")
+                for stage in assembly.timings { LoadClock.shared.sub(stage.name, seconds: stage.seconds) }
                 FileHandle.standardError.write(Data("SwiftSTEP: \(url.lastPathComponent)\n\(assembly.report)\n".utf8))
                 hiddenBodies = []
                 selectedBody = nil
-                document = Document(url: url, assembly: assembly)
+                let loaded = Document(url: url, assembly: assembly)
+                LoadClock.shared.mark("build Document (colours, report)")
+                document = loaded
             } catch is CancellationError {
                 // Superseded by a newer open.
             } catch let error as STEP.ParseError {
