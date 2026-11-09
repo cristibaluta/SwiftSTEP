@@ -47,6 +47,21 @@ extension STEP {
             var distance: Double = 0
         }
 
+        /// The same surface after `placement`: frames moved, radii scaled, B-spline control points moved.
+        func transformed(by placement: STEPPlacement) -> Surface {
+            let s = placement.scale
+            switch self {
+                case .plane(let frame): return .plane(placement.frame(frame))
+                case .cylinder(let frame, let radius): return .cylinder(placement.frame(frame), radius: radius * s)
+                case .cone(let frame, let radius, let halfAngle):
+                    return .cone(placement.frame(frame), radius: radius * s, halfAngle: halfAngle)
+                case .sphere(let frame, let radius): return .sphere(placement.frame(frame), radius: radius * s)
+                case .torus(let frame, let major, let minor):
+                    return .torus(placement.frame(frame), major: major * s, minor: minor * s)
+                case .bspline(let spline): return .bspline(spline.transformed(by: placement))
+            }
+        }
+
         /// The placement of an analytic surface; `nil` for a B-spline surface.
         public var frame: Frame? {
             switch self {

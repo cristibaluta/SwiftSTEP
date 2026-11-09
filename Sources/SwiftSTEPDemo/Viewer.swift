@@ -3,10 +3,29 @@ import UniformTypeIdentifiers
 import SwiftSTEP
 
 /// A parsed file. `id` changes on every load so the renderer knows when to re-upload.
+///
+/// `assembly.bodies` is the array `STEP.readBodies` returns: one entry per solid per placement, with
+/// the geometry already in assembly coordinates.
 struct Document {
     let id = UUID()
     let url: URL
-    let geometry: STEP.Geometry
+    let assembly: STEP.Assembly
+    /// Palette index per body; placements of one part share an index.
+    let colorIndex: [STEP.BodyID: Int]
+
+    init(url: URL, assembly: STEP.Assembly) {
+        self.url = url
+        self.assembly = assembly
+        var parts: [[Int]: Int] = [:]
+        var colors: [STEP.BodyID: Int] = [:]
+        for body in assembly.bodies {
+            let part = [body.id.representationID, body.id.entityID]
+            let index = parts[part] ?? parts.count
+            parts[part] = index
+            colors[body.id] = index
+        }
+        colorIndex = colors
+    }
 }
 
 @MainActor
@@ -15,6 +34,10 @@ final class Viewer: ObservableObject {
     @Published var errorMessage: String?
     @Published var isImporting = false
     @Published var isShowingReport = false
+    /// Bodies switched off in the list; the renderer skips their faces and edges.
+    @Published var hiddenBodies: Set<STEP.BodyID> = []
+    @Published var selectedBody: STEP.BodyID?
+    @Published var showsBodyList = true
 
     /// The sample being shown, when it came from the bundled list (nil for files opened by hand).
     @Published var selectedSample: URL?
@@ -39,19 +62,19 @@ final class Viewer: ObservableObject {
     var title: String { document?.url.lastPathComponent ?? "SwiftSTEP Demo" }
 
     var subtitle: String {
-        guard let geometry = document?.geometry else { return "" }
-        let notes = geometry.edges.diagnostics.count + geometry.surfaces.diagnostics.count
-        var text = "\(geometry.edges.edges.count) edges, \(geometry.surfaces.triangleCount) triangles"
-        let unfilled = geometry.surfaces.unsurfacedBodies.count
-        if unfilled > 0 { text += ", \(unfilled) unfilled bod\(unfilled == 1 ? "y" : "ies")" }
-        let partial = geometry.surfaces.partialBodies.count
+        guard let assembly = document?.assembly else { return "" }
+        let count = assembly.bodies.count
+        var text = "\(count) bod\(count == 1 ? "y" : "ies"), \(assembly.edgeCount) edges, \(assembly.triangleCount) triangles"
+        let unfilled = assembly.bodies.filter { $0.mesh == nil }.count
+        if unfilled > 0 { text += ", \(unfilled) without faces" }
+        let partial = assembly.bodies.filter { $0.mesh?.isPartial == true }.count
         if partial > 0 { text += ", \(partial) partly filled" }
-        if notes > 0 { text += ", \(notes) notes" }
+        if !assembly.diagnostics.isEmpty { text += ", \(assembly.diagnostics.count) notes" }
         return text
     }
 
     /// The library's account of the import: what was filled and why anything was not.
-    var report: String { document?.geometry.report ?? "No file loaded." }
+    var report: String { document?.assembly.report ?? "No file loaded." }
 
     /// A path given on the command line, otherwise the bundled sample.
     func openInitialFile() {
@@ -75,11 +98,14 @@ final class Viewer: ObservableObject {
             let scoped = url.startAccessingSecurityScopedResource()
             defer { if scoped { url.stopAccessingSecurityScopedResource() } }
             do {
-                // The library's async entry point: parses on a detached worker, cancellable.
-                let geometry = try await STEP.loadGeometry(contentsOf: url)
+                // The library's async entry point: parses on a detached worker, cancellable. An
+                // assembly comes back as an array of bodies, each placed in assembly coordinates.
+                let assembly = try await STEP.loadAssembly(contentsOf: url)
                 try Task.checkCancellation()
-                FileHandle.standardError.write(Data("SwiftSTEP: \(url.lastPathComponent)\n\(geometry.report)\n".utf8))
-                document = Document(url: url, geometry: geometry)
+                FileHandle.standardError.write(Data("SwiftSTEP: \(url.lastPathComponent)\n\(assembly.report)\n".utf8))
+                hiddenBodies = []
+                selectedBody = nil
+                document = Document(url: url, assembly: assembly)
             } catch is CancellationError {
                 // Superseded by a newer open.
             } catch let error as STEP.ParseError {

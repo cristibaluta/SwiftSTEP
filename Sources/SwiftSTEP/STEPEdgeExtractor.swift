@@ -5,7 +5,10 @@ final class STEPEdgeExtractor {
     private let file: STEPFile
     private let options: STEP.Options
     private var model: STEP.EdgeModel
-    private static let representationTypes: Set<String> = [
+    /// False when the caller resolves assembly placements itself and does not want the
+    /// "bodies are imported untransformed" warning.
+    private let reportsAssembly: Bool
+    static let representationTypes: Set<String> = [
         "SHAPE_REPRESENTATION",
         "ADVANCED_BREP_SHAPE_REPRESENTATION",
         "MANIFOLD_SURFACE_SHAPE_REPRESENTATION",
@@ -17,9 +20,10 @@ final class STEPEdgeExtractor {
                                                  "SHELL_BASED_SURFACE_MODEL",
                                                  "GEOMETRIC_CURVE_SET"]
 
-    init(file: STEPFile, importID: UUID, options: STEP.Options) {
+    init(file: STEPFile, importID: UUID, options: STEP.Options, reportsAssembly: Bool = true) {
         self.file = file
         self.options = options
+        self.reportsAssembly = reportsAssembly
         model = STEP.EdgeModel(importID: importID)
     }
 
@@ -32,12 +36,15 @@ final class STEPEdgeExtractor {
             throw STEP.ParseError("Chord tolerance must be finite and positive", kind: .invalidOptions)
         }
         model.header = file.header()
-        let assemblies = file.entities(ofTypes: ["MAPPED_ITEM",
-                                                 "NEXT_ASSEMBLY_USAGE_OCCURRENCE",
-                                                 "REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION"])
+        let assemblies = reportsAssembly
+            ? file.entities(ofTypes: ["MAPPED_ITEM",
+                                      "NEXT_ASSEMBLY_USAGE_OCCURRENCE",
+                                      "REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION"])
+            : []
         if let first = assemblies.first {
-            // Placements are not applied yet: each body is imported once, where its own file puts it.
-            diagnose(first, "The file places part instances (\(assemblies.count) assembly entities); their transforms are not applied, so bodies are imported untransformed",
+            // `read`, `readGeometry` and `readTopology` do not apply placements: each body is imported
+            // once, where its own representation puts it. `readAssembly` / `readBodies` do.
+            diagnose(first, "The file places part instances (\(assemblies.count) assembly entities); their transforms are not applied, so bodies are imported untransformed (use STEP.readBodies to place them)",
                      .warning, code: "assembly-untransformed")
         }
         model.indexedEntityCount = file.index.count

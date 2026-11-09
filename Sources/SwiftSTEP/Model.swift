@@ -13,7 +13,8 @@ extension STEP {
             case truncated
             /// Anything else wrong with the file's content. Per-edge and per-face errors use this.
             case malformed
-            /// No longer thrown: a file with assembly entities imports with an `assembly-untransformed`
+            /// No longer thrown: assemblies import. `readBodies` places the parts; the older entry
+            /// points import a file with assembly entities untransformed, with an `assembly-untransformed`
             /// warning. Kept so existing `switch` statements still compile.
             case assembly
             /// The length unit of a representation context could not be resolved, and
@@ -61,14 +62,22 @@ extension STEP {
         public var description: String { entityID.map { "#\($0): \(message)" } ?? message }
     }
 
-    /// No assembly instances yet: a representation/body pair identifies one occurrence.
+    /// One body as it sits in the output: the representation and body entity that define its
+    /// geometry, and which placement of that part it is.
+    ///
+    /// A part that an assembly uses several times is one `MANIFOLD_SOLID_BREP` in the file but
+    /// several bodies in the output, told apart by `instance`: 0 for the first placement, then 1, 2, …
+    /// in the deterministic order `STEP.readBodies` walks the assembly. Everything that does not
+    /// place a part twice (`read`, `readGeometry`, a plain multi-body file) only ever has instance 0.
     public struct BodyID: Hashable, Sendable {
         public let representationID: Int
         public let entityID: Int
+        public let instance: Int
 
-        public init(representationID: Int, entityID: Int) {
+        public init(representationID: Int, entityID: Int, instance: Int = 0) {
             self.representationID = representationID
             self.entityID = entityID
+            self.instance = instance
         }
     }
 
@@ -261,15 +270,21 @@ extension STEP {
         /// bounds the extra memory to a few hundred MB. A face that would go over the cap fails like
         /// any other face that cannot be tessellated.
         public var maximumTriangleCount: Int
+        /// `readBodies` / `readAssembly` only. Most body instances an assembly may expand to. An
+        /// assembly that uses one bolt a thousand times is a thousand bodies; the cap stops a
+        /// hostile or runaway file from multiplying itself. Instances over the cap are left out
+        /// with an `instance-limit` diagnostic. The triangle cap above applies to the instances too.
+        public var maximumInstanceCount: Int
 
         public init(assumedUnitScaleToMM: Double? = nil, chordToleranceMM: Double = 0.01,
                     maximumEntityCount: Int = 2_000_000, keepPartialSurfaces: Bool = true,
-                    maximumTriangleCount: Int = 1_000_000) {
+                    maximumTriangleCount: Int = 1_000_000, maximumInstanceCount: Int = 100_000) {
             self.assumedUnitScaleToMM = assumedUnitScaleToMM
             self.chordToleranceMM = chordToleranceMM
             self.maximumEntityCount = maximumEntityCount
             self.keepPartialSurfaces = keepPartialSurfaces
             self.maximumTriangleCount = maximumTriangleCount
+            self.maximumInstanceCount = maximumInstanceCount
         }
     }
 

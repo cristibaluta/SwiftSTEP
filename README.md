@@ -14,7 +14,7 @@ for note in model.diagnostics { print(note.entityID ?? 0, note.message) }
 ```
 
 The result is display geometry: edges as polylines sampled to a chord tolerance. It does not heal
-geometry, read assemblies or produce machining contours.
+geometry or produce machining contours.
 
 ## API
 
@@ -31,6 +31,32 @@ Call the synchronous forms from a background task, never the main actor.
   source so stored selections stay valid.
 - `STEP.Options`: `assumedUnitScaleToMM: Double?` (default `nil`: an unresolvable length unit fails the
   import) and `chordToleranceMM: Double` (default `0.01`).
+
+### Bodies and assemblies
+
+A file can hold several solids (multi-body) and can place the same part several times (an assembly).
+`readBodies` returns both as one array, with every body already in assembly coordinates (mm):
+
+```swift
+let bodies = try STEP.readBodies(contentsOf: url)      // [STEP.Body]
+for body in bodies {
+    print(body.displayName, body.id.instance, body.bounds?.size ?? .zero)
+}
+let assembly = try STEP.readAssembly(contentsOf: url)  // same bodies + header, bounds, origin, diagnostics, report
+```
+
+- `STEP.Body`: `id` (`BodyID.instance` counts the placements of one part: 0, 1, 2, …), `info`, `transform`
+  (part → assembly, already applied), `path` (occurrence names from the top down), `edges`, `mesh`
+  (`nil` without faces). `includeSurfaces: false` skips tessellation.
+- Placements come from `NEXT_ASSEMBLY_USAGE_OCCURRENCE` with `CONTEXT_DEPENDENT_SHAPE_REPRESENTATION` /
+  `ITEM_DEFINED_TRANSFORMATION`, or from `MAPPED_ITEM` (used only when the file has no usage placements).
+  Nesting is followed; translations are converted from the unit of the representation they are written in.
+  Parts are read and tessellated once and copied through each placement. Mesh positions are relative to
+  `Assembly.origin`.
+- Only rotations with translation (and uniform scale) are supported; a mirrored or skewed placement is
+  skipped with an `assembly-placement-skipped` diagnostic. `Options.maximumInstanceCount` caps the expansion.
+- `read`, `readGeometry` and `readTopology` still import a body once, untransformed, with an
+  `assembly-untransformed` warning when the file places parts.
 
 ### Output types
 
@@ -88,8 +114,7 @@ would hide visible edges) and the body is listed in `unsurfacedBodies`. Cap: 1,0
 
 **Throws** `STEP.ParseError` (its `description` is the message) or `CancellationError` for problems with the
 file as a whole: malformed or truncated Part 21, duplicate entity IDs, excessive nesting, non-finite
-numbers, assemblies (`MAPPED_ITEM`, `NEXT_ASSEMBLY_USAGE_OCCURRENCE`,
-`REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION`), an unresolvable length unit without
+numbers, an unresolvable length unit without
 `assumedUnitScaleToMM`, invalid options.
 
 **Succeeds with a diagnostic** for problems with one edge or face. Always check `diagnostics` (and

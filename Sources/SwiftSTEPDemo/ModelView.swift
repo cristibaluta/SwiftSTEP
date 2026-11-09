@@ -1,5 +1,6 @@
 import SwiftUI
 import MetalKit
+import SwiftSTEP
 
 /// The canvas. Mouse mapping, same as the Stratum CNC app:
 /// - drag: orbit (turntable around Z)
@@ -8,6 +9,9 @@ import MetalKit
 /// - double click: fit the model
 struct ModelView: NSViewRepresentable {
     let document: Document?
+    /// Bodies the list has switched off, and the one it has selected.
+    var hidden: Set<STEP.BodyID> = []
+    var selected: STEP.BodyID?
 
     final class Coordinator {
         var renderer: Renderer?
@@ -28,9 +32,11 @@ struct ModelView: NSViewRepresentable {
 
     func updateNSView(_ view: CanvasView, context: Context) {
         let coordinator = context.coordinator
-        guard coordinator.loadedID != document?.id else { return }
-        coordinator.loadedID = document?.id
-        coordinator.renderer?.load(document?.geometry)
+        if coordinator.loadedID != document?.id {
+            coordinator.loadedID = document?.id
+            coordinator.renderer?.load(document)
+        }
+        coordinator.renderer?.setVisibility(hidden: hidden, selected: selected)
         view.needsDisplay = true
     }
 }

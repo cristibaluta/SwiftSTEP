@@ -19,6 +19,16 @@ final class Renderer: NSObject, MTKViewDelegate {
         var normal: SIMD3<Float>
     }
 
+    /// One body's slice of the shared buffers.
+    private struct Piece {
+        let id: STEP.BodyID
+        let colorIndex: Int
+        let indexStart: Int
+        let indexCount: Int
+        let lineStart: Int
+        let lineCount: Int
+    }
+
     let camera = Camera()
 
     private let device: MTLDevice
@@ -33,11 +43,14 @@ final class Renderer: NSObject, MTKViewDelegate {
     private var indexBuffer: MTLBuffer?
     private var indexCount = 0
 
+    private var pieces: [Piece] = []
+    private var hidden: Set<STEP.BodyID> = []
+    private var selected: STEP.BodyID?
+
     private var center = SIMD3<Float>.zero
     private var radius: Float = 1
     private var needsFit = false
 
-    private let faceColor = SIMD4<Float>(0.55, 0.62, 0.72, 1)
     private let edgeColor = SIMD4<Float>(0.08, 0.09, 0.10, 1)
     // Faces sit a hair behind the edges drawn on them, so the edges win the depth test.
     private let depthBias: Float = 4
@@ -119,40 +132,46 @@ final class Renderer: NSObject, MTKViewDelegate {
     // MARK: Model
 
     /// Replaces what is drawn. Pass `nil` to clear.
-    func load(_ geometry: STEP.Geometry?) {
+    func load(_ document: Document?) {
         lineBuffer = nil
         lineVertexCount = 0
         solidBuffer = nil
         indexBuffer = nil
         indexCount = 0
-        guard let geometry else { return }
+        pieces = []
+        guard let document else { return }
 
-        // Edge points are Double in source coordinates; recentre on the workpiece corner before
-        // dropping to Float, the same origin the library uses for its meshes.
-        let model = geometry.edges
-        let origin = model.bounds?.workpieceOrigin ?? .zero
+        // Every body's edges (Double) and mesh (Float) are in assembly coordinates; the mesh positions
+        // are relative to `assembly.origin`, so the edges are brought to the same origin before
+        // dropping to Float.
+        let assembly = document.assembly
+        let origin = assembly.origin
 
         var lines: [SIMD3<Float>] = []
-        for edge in model.edges {
-            guard var previous = edge.points.first.map({ SIMD3<Float>($0 - origin) }) else { continue }
-            for point in edge.points.dropFirst() {
-                let current = SIMD3<Float>(point - origin)
-                lines.append(previous)
-                lines.append(current)
-                previous = current
-            }
-        }
-
-        // Meshes are relative to `surfaces.origin`; shift them onto the same origin as the edges.
-        let shift = SIMD3<Float>(geometry.surfaces.origin - origin)
         var vertices: [SolidVertex] = []
         var indices: [UInt32] = []
-        for mesh in geometry.surfaces.bodies {
-            let base = UInt32(vertices.count)
-            for (position, normal) in zip(mesh.positions, mesh.normals) {
-                vertices.append(SolidVertex(position: position + shift, normal: normal))
+        for body in assembly.bodies {
+            let lineStart = lines.count
+            for edge in body.edges {
+                guard var previous = edge.points.first.map({ SIMD3<Float>($0 - origin) }) else { continue }
+                for point in edge.points.dropFirst() {
+                    let current = SIMD3<Float>(point - origin)
+                    lines.append(previous)
+                    lines.append(current)
+                    previous = current
+                }
             }
-            indices.append(contentsOf: mesh.indices.map { $0 + base })
+            let indexStart = indices.count
+            if let mesh = body.mesh {
+                let base = UInt32(vertices.count)
+                for (position, normal) in zip(mesh.positions, mesh.normals) {
+                    vertices.append(SolidVertex(position: position, normal: normal))
+                }
+                indices.append(contentsOf: mesh.indices.map { $0 + base })
+            }
+            pieces.append(Piece(id: body.id, colorIndex: document.colorIndex[body.id] ?? 0,
+                                indexStart: indexStart, indexCount: indices.count - indexStart,
+                                lineStart: lineStart, lineCount: lines.count - lineStart))
         }
 
         lineVertexCount = lines.count
@@ -161,7 +180,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         indexBuffer = makeBuffer(indices)
         indexCount = indices.count
 
-        if let bounds = model.bounds {
+        if let bounds = assembly.bounds {
             center = SIMD3<Float>((bounds.min + bounds.max) / 2 - origin)
             radius = max(Float(simd_length(bounds.size) / 2), 1e-3)
         } else {
@@ -169,6 +188,12 @@ final class Renderer: NSObject, MTKViewDelegate {
             radius = 1
         }
         needsFit = true
+    }
+
+    /// Which bodies are drawn, and which one is highlighted.
+    func setVisibility(hidden: Set<STEP.BodyID>, selected: STEP.BodyID?) {
+        self.hidden = hidden
+        self.selected = selected
     }
 
     /// Frames the whole model on the next draw.
@@ -201,16 +226,21 @@ final class Renderer: NSObject, MTKViewDelegate {
         encoder.setDepthStencilState(depthState)
 
         if let solidBuffer, let indexBuffer, indexCount > 0 {
-            var uniforms = Uniforms(viewProjection: viewProjection, color: faceColor,
+            var uniforms = Uniforms(viewProjection: viewProjection, color: BodyPalette.rgba(0),
                                     light: SIMD4<Float>(camera.headlight, 0), ambient: 0.5)
             encoder.setRenderPipelineState(solidPipeline)
             encoder.setCullMode(.none)   // two-sided: a flipped face shows as an ambient patch, not a hole
             encoder.setDepthBias(depthBias, slopeScale: depthBiasSlope, clamp: 0)
-            encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
-            encoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
             encoder.setVertexBuffer(solidBuffer, offset: 0, index: 0)
-            encoder.drawIndexedPrimitives(type: .triangle, indexCount: indexCount, indexType: .uint32,
-                                          indexBuffer: indexBuffer, indexBufferOffset: 0)
+            // One draw per body: each has its own colour (the selected one is highlighted).
+            for piece in pieces where piece.indexCount > 0 && !hidden.contains(piece.id) {
+                uniforms.color = piece.id == selected ? BodyPalette.selection : BodyPalette.rgba(piece.colorIndex)
+                encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
+                encoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
+                encoder.drawIndexedPrimitives(type: .triangle, indexCount: piece.indexCount, indexType: .uint32,
+                                              indexBuffer: indexBuffer,
+                                              indexBufferOffset: piece.indexStart * MemoryLayout<UInt32>.stride)
+            }
             encoder.setDepthBias(0, slopeScale: 0, clamp: 0)
         }
 
@@ -221,7 +251,9 @@ final class Renderer: NSObject, MTKViewDelegate {
             encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
             encoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
             encoder.setVertexBuffer(lineBuffer, offset: 0, index: 0)
-            encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: lineVertexCount)
+            for piece in pieces where piece.lineCount > 0 && !hidden.contains(piece.id) {
+                encoder.drawPrimitives(type: .line, vertexStart: piece.lineStart, vertexCount: piece.lineCount)
+            }
         }
 
         encoder.endEncoding()

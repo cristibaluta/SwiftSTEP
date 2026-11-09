@@ -42,6 +42,30 @@ enum STEPEdgeImporter {
         return try STEPTopologyExtractor(file: file, model: edges, options: options).extract()
     }
 
+    /// Every body placed in assembly coordinates. Parses the file once; each distinct part is read (and
+    /// tessellated, when `includeSurfaces`) once and then copied through its placements.
+    /// Synchronous: call it from a background task.
+    static func parseAssembly(data: Data, importID: UUID = UUID(), options: STEP.Options = STEP.Options(),
+                              includeSurfaces: Bool = true) throws -> STEP.Assembly {
+        try Task.checkCancellation()
+        let file = try openFile(data, options)
+        let edges = try STEPEdgeExtractor(file: file, importID: importID, options: options,
+                                          reportsAssembly: false).extract()
+        var surfaces: STEP.SurfaceModel?
+        if includeSurfaces {
+            do {
+                surfaces = try STEPTessellator(file: file, model: edges, options: options).tessellate()
+            } catch let error as STEP.ParseError {
+                var unavailable = STEP.SurfaceModel()
+                unavailable.diagnostics = [STEP.Diagnostic(entityID: nil, message: "Surfaces unavailable: \(error.description)",
+                                                          severity: .warning, code: "surfaces-unavailable")]
+                surfaces = unavailable
+            }
+        }
+        let resolution = try STEPAssemblyResolver(file: file, model: edges, options: options).resolve()
+        return try STEP.Assembly.assemble(edges: edges, surfaces: surfaces, resolution: resolution, options: options)
+    }
+
     /// Runs `work` on a detached task so it never inherits an actor, and forwards cancellation.
     /// The parser and its cache are created inside the worker and never cross actors.
     static func detached<T: Sendable>(_ work: @escaping @Sendable () throws -> T) async throws -> T {

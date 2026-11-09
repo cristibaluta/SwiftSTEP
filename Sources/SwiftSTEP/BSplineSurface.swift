@@ -30,7 +30,7 @@ extension STEP {
         public let uDomain: ClosedRange<Double>
         public let vDomain: ClosedRange<Double>
         /// Diagonal of the control points' bounding box (mm): the scale for tolerances.
-        let size: Double
+        private(set) var size: Double
         /// Why this surface cannot carry a trimmed face yet, or `nil`.
         private(set) var limitation: String?
         /// The surface's low and high sides coincide, so the surface is periodic in that direction.
@@ -38,7 +38,7 @@ extension STEP {
         public private(set) var closedV = false
 
         /// Weighted control points `(x·w, y·w, z·w, w)`, row-major in u: index `i * vCount + j`.
-        private let controls: [SIMD4<Double>]
+        private var controls: [SIMD4<Double>]
         private let uKnots: [Double]
         private let vKnots: [Double]
 
@@ -103,6 +103,22 @@ extension STEP {
 
             limitation = findLimitation()
             buildTable()
+        }
+
+        /// The surface after a rotation, translation and uniform scale. The knots and the (u, v)
+        /// parametrisation do not change, so the same parameters give the moved points.
+        func transformed(by placement: STEPPlacement) -> BSplineSurface {
+            var moved = self
+            // Homogeneous control point (x·w, y·w, z·w, w): the linear part acts on x·w…z·w and the
+            // translation is carried by w.
+            moved.controls = controls.map { control in
+                let p = placement.rotation * (SIMD3<Double>(control.x, control.y, control.z) * placement.scale)
+                    + placement.translation * control.w
+                return SIMD4<Double>(p.x, p.y, p.z, control.w)
+            }
+            moved.size = size * placement.scale
+            moved.buildTable()
+            return moved
         }
 
         // MARK: Knots

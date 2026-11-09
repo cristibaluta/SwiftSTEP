@@ -7,7 +7,13 @@ struct ContentView: View {
     @ObservedObject var viewer: Viewer
 
     var body: some View {
-        ModelView(document: viewer.document)
+        HSplitView {
+            ModelView(document: viewer.document, hidden: viewer.hiddenBodies, selected: viewer.selectedBody)
+            if viewer.showsBodyList {
+                BodyListView(viewer: viewer)
+                    .frame(minWidth: 220, idealWidth: 260, maxWidth: 420)
+            }
+        }
             .navigationTitle(viewer.title)
             .navigationSubtitle(viewer.subtitle)
             .toolbar {
@@ -19,6 +25,10 @@ struct ContentView: View {
                         }
                     }
                     .help("Switch between the bundled test models")
+                }
+                ToolbarItem {
+                    Button { viewer.showsBodyList.toggle() } label: { Label("Bodies", systemImage: "sidebar.right") }
+                        .help("Show or hide the list of bodies")
                 }
                 ToolbarItem {
                     Button { viewer.isShowingReport = true } label: { Label("Import report", systemImage: "info.circle") }
