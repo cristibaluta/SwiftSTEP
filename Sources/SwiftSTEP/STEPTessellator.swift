@@ -366,20 +366,35 @@ final class STEPTessellator {
     private func tessellateFace(_ id: Int, parsed: STEPFaceReader.ParsedFace, surface: STEP.Surface, shellFlipped: Bool,
                                 edges: [Int: STEP.Edge], into mesh: inout STEP.BodyMesh) throws {
         guard !parsed.boundIDs.isEmpty else { throw STEP.ParseError("Face has no boundary") }
+        // Per-face timing: reported (as `slow-face`) only when the face is slow, so a log shows which phase costs.
+        let clock = ContinuousClock()
+        let faceStart = clock.now
+        func milliseconds(_ d: Duration) -> Double { Double(d.components.seconds) * 1000 + Double(d.components.attoseconds) / 1e15 }
+        var extractMs = 0.0
+        var parametrizeMs = 0.0
+        var boundaryPoints = 0
+        var perimeter = 0.0
         var loops: [ParamLoop] = []
         // Poles the face contains in its interior, found where a seam edge runs out to one and back.
         var poles: [STEPSlabTriangulator.Vertex] = []
         for bound in parsed.boundIDs {
+            let extractStart = clock.now
             let loop = Self.cancelSpikes(try loopPoints(bound: bound, edges: edges))
+            extractMs += milliseconds(extractStart.duration(to: clock.now))
             guard loop.points.count >= 3 else { throw STEP.ParseError("Face loop is degenerate") }
+            boundaryPoints += loop.points.count
+            for i in loop.points.indices { perimeter += simd_distance(loop.points[i], loop.points[(i + 1) % loop.points.count]) }
             for tip in loop.tips {
                 let parameters = surface.parameters(of: tip)
                 if parameters.isPole {
                     poles.append(STEPSlabTriangulator.Vertex(u: 0, v: parameters.v, position: tip))
                 }
             }
+            let parametrizeStart = clock.now
             loops.append(try parametrize(loop.points, on: surface))
+            parametrizeMs += milliseconds(parametrizeStart.duration(to: clock.now))
         }
+        let triangulateStart = clock.now
         var planar: STEPSlabTriangulator.Result?
         if case .plane = surface, poles.isEmpty {
             planar = try triangulatePlane(loops)
@@ -396,6 +411,26 @@ final class STEPTessellator {
                                                           triangleLimit: triangleBudget)
         }
         triangleBudget -= result.triangles.count
+        let triangulateMs = milliseconds(triangulateStart.duration(to: clock.now))
+        let totalMs = milliseconds(faceStart.duration(to: clock.now))
+        if totalMs > 100 {
+            diagnose(id, String(format: "Face #%d on %@ took %.0f ms: %d boundary points (extract %.0f ms, parametrize %.0f ms), "
+                                + "triangulate %.0f ms, %d triangles", id, surface.kindName, totalMs, boundaryPoints,
+                                extractMs, parametrizeMs, triangulateMs, result.triangles.count),
+                     .info, code: "slow-face")
+        }
+        // A face whose triangles cover next to no area although its boundary encloses some was not
+        // meshed where it lies (a seam that came out at the wrong parameter, say): it draws as nothing.
+        var meshArea = 0.0
+        for t in result.triangles {
+            let a = result.vertices[t.x].position, b = result.vertices[t.y].position, c = result.vertices[t.z].position
+            meshArea += simd_length(simd_cross(b - a, c - a)) / 2
+        }
+        if perimeter > 0, meshArea / (perimeter * perimeter) < 1e-5 {
+            diagnose(id, String(format: "Face #%d on %@ is marked filled but its %d triangles cover %.3g mm² inside a %.3g mm boundary; the face is probably meshed in the wrong place or collapsed and may not draw",
+                                id, surface.kindName, result.triangles.count, meshArea, perimeter),
+                     .warning, code: "face-collapsed")
+        }
 
         // The surface normal is a face's front unless same_sense is false; a reversed shell
         // (a void) turns every face the other way again.

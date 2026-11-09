@@ -104,8 +104,9 @@ extension STEP {
             var lines = ["Bodies: \(bodies.count) (\(parts) distinct part\(parts == 1 ? "" : "s"), "
                          + "\(placementCount) placement\(placementCount == 1 ? "" : "s")), "
                          + "\(edgeCount) edges, \(triangleCount) triangles"]
-            for note in diagnostics where note.code.hasPrefix("assembly-") || note.code.hasPrefix("instance-") {
-                lines.append("  assembly note \(note)")
+            for note in diagnostics where note.code.hasPrefix("assembly-") || note.code.hasPrefix("instance-")
+                || note.code == "slow-face" || note.code == "face-collapsed" {
+                lines.append("  note \(note.code): \(note.message)")
             }
             if let prototype {
                 lines.append("Parts before placement:")
