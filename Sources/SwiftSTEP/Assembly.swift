@@ -117,6 +117,35 @@ extension STEP {
     }
 }
 
+// MARK: - Bodies as a surface model
+
+extension STEP.Assembly {
+
+    /// The bodies' triangle meshes as a `SurfaceModel`, for a viewer that looks a body's mesh up by
+    /// `BodyID` (`mesh(for:)`). A part placed several times has one mesh per placement. Positions are
+    /// relative to `origin`, like `SurfaceModel.origin`.
+    ///
+    /// `unsurfacedBodies` lists the bodies without a mesh. The face counts and `faceFailures` are those
+    /// of the parts before placement (a part used four times counts once). `diagnostics` is left empty:
+    /// `Assembly.diagnostics` already holds every note of the import.
+    public var surfaces: STEP.SurfaceModel {
+        var model = STEP.SurfaceModel(origin: origin)
+        model.bodies = bodies.compactMap { $0.mesh }
+        model.unsurfacedBodies = bodies.filter { $0.mesh == nil }.map { $0.id }
+        if let source = prototype?.surfaces {
+            model.faceFailures = source.faceFailures
+            model.reachableFaceCount = source.reachableFaceCount
+            model.failedFaceCount = source.failedFaceCount
+            model.tessellatedFaceCount = source.tessellatedFaceCount
+        }
+        return model
+    }
+
+    /// Edges the parts have that could not be extracted (before placement). 0 when the import was
+    /// made without surfaces, which is when the part-level numbers are not kept.
+    public var skippedEdgeCount: Int { prototype?.edges.skippedEdgeCount ?? 0 }
+}
+
 // MARK: - Building the result
 
 extension STEP.Assembly {
