@@ -9,7 +9,8 @@ let package = Package(
     ],
     products: [
         .library(name: "SwiftSTEP", targets: ["SwiftSTEP"]),
-        .executable(name: "SwiftSTEPDemo", targets: ["SwiftSTEPDemo"])
+        .executable(name: "SwiftSTEPDemo", targets: ["SwiftSTEPDemo"]),
+        .executable(name: "step2stl", targets: ["step2stl"])
     ],
     targets: [
         .target(name: "SwiftSTEP"),
@@ -20,6 +21,7 @@ let package = Package(
                               .process("Shaders.metal"),   // compiled into the bundle's default.metallib
                               .copy("Samples")             // hard-case models behind the toolbar dropdown
                           ]),
+        .executableTarget(name: "step2stl", dependencies: ["SwiftSTEP"]),
         .testTarget(name: "SwiftSTEPTests", dependencies: ["SwiftSTEP"]),
     ]
 )

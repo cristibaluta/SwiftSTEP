@@ -173,6 +173,12 @@ polylines; `smoothShading` welds vertices and averages normals across non-crease
 Welding uses a grid of about 1e-5 of the bounding-box diagonal. Inconsistent triangle winding shows up as
 false creases. Non-manifold edges add an `stl-non-manifold` warning.
 
+### Converting STEP to STL
+
+`swift run -c release step2stl <file-or-folder> [<output-folder>] [--chord <mm>]` writes binary STL with the
+library's tessellator (`STL.binaryData(for:)`). `Scripts/make_stl_samples.sh` converts every demo sample into
+`Sources/SwiftSTEPDemo/Samples/`, where the demo's dropdown picks the `.stl` files up next to the `.step` ones.
+
 ## Tests
 
 `swift test`. `STEPCurveTests.swift` (Swift Testing) builds Part 21 fixtures in code: box, cylinder, arcs,

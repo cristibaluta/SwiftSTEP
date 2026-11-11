@@ -42,9 +42,11 @@ final class Viewer: ObservableObject {
     /// The sample being shown, when it came from the bundled list (nil for files opened by hand).
     @Published var selectedSample: URL?
 
-    /// Bundled models: the die cube plus the hard cases in `Samples/`, sorted by name.
+    /// Bundled models: the die cube plus the hard cases in `Samples/` (STEP, and their STL
+    /// conversions once `Scripts/make_stl_samples.sh` has been run), sorted by name.
     let samples: [URL] = {
         var urls = Bundle.module.urls(forResourcesWithExtension: "step", subdirectory: "Samples") ?? []
+        urls += Bundle.module.urls(forResourcesWithExtension: "stl", subdirectory: "Samples") ?? []
         if let die = Bundle.module.url(forResource: "die_cube", withExtension: "step") { urls.append(die) }
         return urls.sorted { $0.lastPathComponent < $1.lastPathComponent }
     }()

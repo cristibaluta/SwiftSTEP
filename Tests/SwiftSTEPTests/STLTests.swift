@@ -238,3 +238,15 @@ private func uvSphere(segments: Int = 32, rings: Int = 16) -> [Triangle] {
         #expect(!geometry.edges.edges.isEmpty)
     }
 }
+
+@Suite struct STLWriterTests {
+    @Test func writeThenReadRoundTrips() throws {
+        let geometry = try STL.readGeometry(data: binarySTL(cubeTriangles))
+        let data = STL.binaryData(for: geometry)
+        #expect(data.count == 84 + 50 * 12)
+        let again = try STL.readGeometry(data: data)
+        #expect(again.surfaces.bodies.first?.triangleCount == 12)
+        #expect(again.edges.bounds?.min == geometry.edges.bounds?.min)
+        #expect(again.edges.bounds?.max == geometry.edges.bounds?.max)
+    }
+}
