@@ -166,3 +166,75 @@ private func parseError(_ work: () throws -> Void) -> STEP.ParseError? {
         #expect(assembly.edgeCount == 0)
     }
 }
+
+// MARK: - Phase 2: feature edges and smooth shading
+
+private func uvSphere(segments: Int = 32, rings: Int = 16) -> [Triangle] {
+    func p(_ ring: Int, _ segment: Int) -> SIMD3<Float> {
+        let theta = Float.pi * Float(ring) / Float(rings), phi = 2 * Float.pi * Float(segment % segments) / Float(segments)
+        return SIMD3(sin(theta) * cos(phi), sin(theta) * sin(phi), cos(theta))
+    }
+    var result: [Triangle] = []
+    for i in 0..<rings {
+        for j in 0..<segments {
+            // The polar quads collapse to one triangle each; the reader drops the zero-area half.
+            result.append((p(i, j), p(i + 1, j), p(i + 1, j + 1)))
+            result.append((p(i, j), p(i + 1, j + 1), p(i, j + 1)))
+        }
+    }
+    return result
+}
+
+@Suite struct STLFeatureEdgeTests {
+
+    private let featureOptions = STL.Options(featureAngleDegrees: 30)
+
+    @Test func cubeYieldsTwelveEdges() throws {
+        let geometry = try STL.readGeometry(data: binarySTL(cubeTriangles), stl: featureOptions)
+        #expect(geometry.edges.edges.count == 12)
+        #expect(geometry.edges.edges.allSatisfy { $0.points.count == 2 && $0.kind == .polyline })
+        #expect(geometry.edges.skippedEdgeCount == 0)
+        #expect(!geometry.edges.diagnostics.contains { $0.code == "stl-no-edges" })
+        #expect(geometry.surfaces.bodies.first?.triangleCount == 12)   // still flat unless smoothing is asked for
+    }
+
+    @Test func sphereYieldsNoEdgesAndSmoothNormals() throws {
+        let options = STL.Options(featureAngleDegrees: 30, smoothShading: true)
+        let geometry = try STL.readGeometry(data: binarySTL(uvSphere()), stl: options)
+        #expect(geometry.edges.edges.isEmpty)
+        let mesh = try #require(geometry.surfaces.bodies.first)
+        let origin = SIMD3<Float>(geometry.surfaces.origin)
+        for (position, normal) in zip(mesh.positions, mesh.normals) {
+            #expect(simd_dot(normal, simd_normalize(position + origin)) > 0.98)
+        }
+        #expect(mesh.positions.count < mesh.indices.count)             // welded and shared
+    }
+
+    @Test func openSheetYieldsItsBoundaryLoop() throws {
+        let square: [Triangle] = quad(SIMD3(0, 0, 0), SIMD3(1, 0, 0), SIMD3(1, 1, 0), SIMD3(0, 1, 0))
+        let geometry = try STL.readGeometry(data: binarySTL(square), stl: featureOptions)
+        #expect(geometry.edges.edges.count == 1)
+        let points = try #require(geometry.edges.edges.first).points
+        #expect(points.count == 5)
+        #expect(points.first == points.last)
+    }
+
+    @Test func smoothingSplitsCubeAtItsCreases() throws {
+        let options = STL.Options(featureAngleDegrees: 30, smoothShading: true)
+        let geometry = try STL.readGeometry(data: binarySTL(cubeTriangles), stl: options)
+        let mesh = try #require(geometry.surfaces.bodies.first)
+        #expect(mesh.positions.count == 24)                             // 4 per face
+        #expect(mesh.normals.allSatisfy { max(abs($0.x), abs($0.y), abs($0.z)) > 0.999 })
+    }
+
+    @Test func nonManifoldEdgeIsReported() throws {
+        let fin: [Triangle] = [
+            (SIMD3(0, 0, 0), SIMD3(1, 0, 0), SIMD3(0, 1, 0)),
+            (SIMD3(1, 0, 0), SIMD3(0, 0, 0), SIMD3(0, 0, 1)),
+            (SIMD3(0, 0, 0), SIMD3(1, 0, 0), SIMD3(0, -1, 0)),
+        ]
+        let geometry = try STL.readGeometry(data: binarySTL(fin), stl: featureOptions)
+        #expect(geometry.edges.diagnostics.contains { $0.code == "stl-non-manifold" })
+        #expect(!geometry.edges.edges.isEmpty)
+    }
+}

@@ -102,7 +102,7 @@ final class Viewer: ObservableObject {
                 // The library's async entry point: parses on a detached worker, cancellable. An
                 // assembly comes back as an array of bodies, each placed in assembly coordinates.
                 let isSTL = url.pathExtension.lowercased() == "stl"
-                let assembly = isSTL ? try await STL.loadAssembly(contentsOf: url)
+                let assembly = isSTL ? try await STL.loadAssembly(contentsOf: url, stl: STL.Options(featureAngleDegrees: 30, smoothShading: true))
                                      : try await STEP.loadAssembly(contentsOf: url)
                 try Task.checkCancellation()
                 LoadClock.shared.mark("STEP.loadAssembly (read file + library, see breakdown)")

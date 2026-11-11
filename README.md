@@ -159,7 +159,19 @@ Reads binary and ASCII STL, optionally gzipped. Binary is detected by file size,
 Caveats: no edges (the edge model is empty), flat shading from triangle winding (stored normals are
 ignored), no units (millimetres unless `Options.assumedUnitScaleToMM` is set, reported as `unitsAssumed`),
 `BodyMesh.faces` is empty, and several `solid` blocks become one body. Zero-area triangles are dropped
-with a `degenerate-triangles` note. Meshes are not repaired or welded.
+with a `degenerate-triangles` note. Meshes are not repaired.
+
+Optional edges and smooth shading, off by default:
+
+```swift
+let options = STL.Options(featureAngleDegrees: 30, smoothShading: true)
+let geometry = try STL.readGeometry(contentsOf: url, stl: options)
+```
+
+`featureAngleDegrees` extracts edges (boundary, non-manifold, and creases sharper than the angle) as chained
+polylines; `smoothShading` welds vertices and averages normals across non-crease edges, splitting at creases.
+Welding uses a grid of about 1e-5 of the bounding-box diagonal. Inconsistent triangle winding shows up as
+false creases. Non-manifold edges add an `stl-non-manifold` warning.
 
 ## Tests
 

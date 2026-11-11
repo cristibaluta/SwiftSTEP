@@ -100,7 +100,7 @@ Build the files in memory, no fixtures needed:
 ### Step 6 (done). Docs
 Add a short "STL" section to `README.md`: the API, the "no edges, flat shading, units assumed mm" caveats.
 
-## Phase 2 (optional): feature edges and smooth shading
+## Phase 2 (done): feature edges and smooth shading
 
 New file `Sources/SwiftSTEP/STLFeatureEdges.swift`, behind an option such as `STL.Options.featureAngleDegrees`.
 

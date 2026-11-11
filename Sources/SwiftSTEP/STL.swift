@@ -11,32 +11,37 @@ import simd
 public enum STL {
 
     public static func readGeometry(data: Data, importID: UUID = UUID(),
-                                    options: STEP.Options = STEP.Options()) throws -> STEP.Geometry {
+                                    options: STEP.Options = STEP.Options(),
+                                    stl: STL.Options = STL.Options()) throws -> STEP.Geometry {
         try Task.checkCancellation()
         let raw = try STEPGzip.inflateIfGzip(data)
         let decoded = try decode(raw, options: options)
-        return try build(decoded, importID: importID, options: options)
+        return try build(decoded, importID: importID, options: options, stl: stl)
     }
 
     public static func readGeometry(contentsOf url: URL, importID: UUID = UUID(),
-                                    options: STEP.Options = STEP.Options()) throws -> STEP.Geometry {
-        try readGeometry(data: Data(contentsOf: url, options: .mappedIfSafe), importID: importID, options: options)
+                                    options: STEP.Options = STEP.Options(),
+                                    stl: STL.Options = STL.Options()) throws -> STEP.Geometry {
+        try readGeometry(data: Data(contentsOf: url, options: .mappedIfSafe), importID: importID, options: options,
+                         stl: stl)
     }
 
     public static func loadGeometry(contentsOf url: URL, importID: UUID = UUID(),
-                                    options: STEP.Options = STEP.Options()) async throws -> STEP.Geometry {
-        try await STEPEdgeImporter.detached { try readGeometry(contentsOf: url, importID: importID, options: options) }
+                                    options: STEP.Options = STEP.Options(),
+                                    stl: STL.Options = STL.Options()) async throws -> STEP.Geometry {
+        try await STEPEdgeImporter.detached { try readGeometry(contentsOf: url, importID: importID, options: options, stl: stl) }
     }
 
     /// The same mesh as a one-body `STEP.Assembly`, for consumers (like the demo) built on assemblies.
     public static func loadAssembly(contentsOf url: URL, importID: UUID = UUID(),
-                                    options: STEP.Options = STEP.Options()) async throws -> STEP.Assembly {
-        let geometry = try await loadGeometry(contentsOf: url, importID: importID, options: options)
+                                    options: STEP.Options = STEP.Options(),
+                                    stl: STL.Options = STL.Options()) async throws -> STEP.Assembly {
+        let geometry = try await loadGeometry(contentsOf: url, importID: importID, options: options, stl: stl)
         guard let info = geometry.edges.bodies.first, let mesh = geometry.surfaces.bodies.first else {
             throw STEP.ParseError("STL produced no body.", kind: .malformed)
         }
         var assembly = STEP.Assembly(importID: importID, prototype: nil)
-        assembly.bodies = [STEP.Body(id: info.id, info: info, edges: [], mesh: mesh)]
+        assembly.bodies = [STEP.Body(id: info.id, info: info, edges: geometry.edges.edges, mesh: mesh)]
         assembly.bounds = geometry.edges.bounds
         assembly.origin = geometry.surfaces.origin
         assembly.diagnostics = geometry.edges.diagnostics
@@ -187,7 +192,8 @@ public enum STL {
 
     // MARK: - Building the result
 
-    private static func build(_ decoded: Decoded, importID: UUID, options: STEP.Options) throws -> STEP.Geometry {
+    private static func build(_ decoded: Decoded, importID: UUID, options: STEP.Options,
+                              stl: STL.Options) throws -> STEP.Geometry {
         let scale = options.assumedUnitScaleToMM ?? 1
         guard scale.isFinite, scale > 0 else {
             throw STEP.ParseError("assumedUnitScaleToMM must be a positive finite number.", kind: .invalidOptions)
@@ -218,17 +224,31 @@ public enum STL {
 
         let origin = bounds.workpieceOrigin
         let id = STEP.BodyID(representationID: 0, entityID: 0)
+        let wantEdges = stl.featureAngleDegrees != nil
+        var analysis: STLAnalysis?
+        if wantEdges || stl.smoothShading {
+            analysis = try STLFeatureEdges.analyze(kept, angleDegrees: stl.featureAngleDegrees ?? 30,
+                                                   diagonal: simd_length(bounds.size),
+                                                   wantEdges: wantEdges, wantSmooth: stl.smoothShading)
+        }
+
         var mesh = STEP.BodyMesh(id: id)
-        mesh.positions.reserveCapacity(kept.count)
-        mesh.normals.reserveCapacity(kept.count)
-        mesh.indices.reserveCapacity(kept.count)
-        for t in 0..<(kept.count / 3) {
-            let a = kept[3 * t], b = kept[3 * t + 1], c = kept[3 * t + 2]
-            let normal = SIMD3<Float>(simd_normalize(simd_cross(b - a, c - a)))
-            for point in [a, b, c] {
-                mesh.indices.append(UInt32(mesh.positions.count))
-                mesh.positions.append(SIMD3<Float>(point - origin))
-                mesh.normals.append(normal)
+        if let analysis, stl.smoothShading {
+            mesh.positions = analysis.positions.map { SIMD3<Float>($0 - origin) }
+            mesh.normals = analysis.normals
+            mesh.indices = analysis.indices
+        } else {
+            mesh.positions.reserveCapacity(kept.count)
+            mesh.normals.reserveCapacity(kept.count)
+            mesh.indices.reserveCapacity(kept.count)
+            for t in 0..<(kept.count / 3) {
+                let a = kept[3 * t], b = kept[3 * t + 1], c = kept[3 * t + 2]
+                let normal = SIMD3<Float>(simd_normalize(simd_cross(b - a, c - a)))
+                for point in [a, b, c] {
+                    mesh.indices.append(UInt32(mesh.positions.count))
+                    mesh.positions.append(SIMD3<Float>(point - origin))
+                    mesh.normals.append(normal)
+                }
             }
         }
 
@@ -237,12 +257,27 @@ public enum STL {
             notes.append(STEP.Diagnostic(entityID: nil, message: "Dropped \(dropped) zero-area triangle(s).",
                                          severity: .info, code: "degenerate-triangles"))
         }
-        notes.append(STEP.Diagnostic(entityID: nil, message: "STL has no edges; showing the shaded mesh only.",
-                                     severity: .info, code: "stl-no-edges"))
+        if let analysis, analysis.nonManifoldEdgeCount > 0 {
+            notes.append(STEP.Diagnostic(entityID: nil,
+                                         message: "\(analysis.nonManifoldEdgeCount) edge(s) are shared by more than two triangles.",
+                                         severity: .warning, code: "stl-non-manifold"))
+        }
+        if !wantEdges {
+            notes.append(STEP.Diagnostic(entityID: nil, message: "STL has no edges; showing the shaded mesh only.",
+                                         severity: .info, code: "stl-no-edges"))
+        }
+
+        var edgeList: [STEP.Edge] = []
+        for (index, line) in (analysis?.polylines ?? []).enumerated() {
+            edgeList.append(STEP.Edge(id: STEP.EdgeID(importID: importID, bodyID: id, entityID: index),
+                                      kind: .polyline, points: line, startVertexID: nil, endVertexID: nil,
+                                      adjacentFaceIDs: []))
+        }
 
         let info = STEP.BodyInfo(id: id, contextID: 0, unitScaleToMM: scale, unitsAssumed: true,
                                  bounds: bounds, name: decoded.name)
-        let edges = STEP.EdgeModel(importID: importID, bodies: [info], bounds: bounds, diagnostics: notes)
+        let edges = STEP.EdgeModel(importID: importID, edges: edgeList, bodies: [info], bounds: bounds,
+                                   diagnostics: notes, reachableEdgeCount: edgeList.count)
         var surfaces = STEP.SurfaceModel(origin: origin)
         surfaces.bodies = [mesh]
         return STEP.Geometry(edges: edges, surfaces: surfaces)
