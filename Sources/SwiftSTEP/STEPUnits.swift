@@ -4,10 +4,22 @@ struct STEPUnits {
     let file: STEPFile
 
     private static let siPrefixes: [String: Double] = [
-        "EXA": 1e18, "PETA": 1e15, "TERA": 1e12, "GIGA": 1e9,
-        "MEGA": 1e6, "KILO": 1e3, "HECTO": 1e2, "DECA": 1e1,
-        "DECI": 1e-1, "CENTI": 1e-2, "MILLI": 1e-3, "MICRO": 1e-6,
-        "NANO": 1e-9, "PICO": 1e-12, "FEMTO": 1e-15, "ATTO": 1e-18
+        "EXA": 1e18,
+        "PETA": 1e15,
+        "TERA": 1e12,
+        "GIGA": 1e9,
+        "MEGA": 1e6,
+        "KILO": 1e3,
+        "HECTO": 1e2,
+        "DECA": 1e1,
+        "DECI": 1e-1,
+        "CENTI": 1e-2,
+        "MILLI": 1e-3,
+        "MICRO": 1e-6,
+        "NANO": 1e-9,
+        "PICO": 1e-12,
+        "FEMTO": 1e-15,
+        "ATTO": 1e-18
     ]
 
     /// What differs between the two kinds of unit this file resolves.
@@ -22,10 +34,19 @@ struct STEPUnits {
         /// Result for the base unit with no prefix: millimetres per metre, radians per radian.
         let baseScale: Double
 
-        static let length = Kind(unitType: "LENGTH_UNIT", baseUnit: "METRE", measureType: "LENGTH_MEASURE_WITH_UNIT",
-                                 noun: "length", shortNoun: "length", baseScale: 1000)
-        static let angle = Kind(unitType: "PLANE_ANGLE_UNIT", baseUnit: "RADIAN", measureType: "PLANE_ANGLE_MEASURE_WITH_UNIT",
-                                noun: "plane angle", shortNoun: "angle", baseScale: 1)
+        static let length = Kind(unitType: "LENGTH_UNIT",
+                                 baseUnit: "METRE",
+                                 measureType: "LENGTH_MEASURE_WITH_UNIT",
+                                 noun: "length",
+                                 shortNoun: "length",
+                                 baseScale: 1000)
+
+        static let angle = Kind(unitType: "PLANE_ANGLE_UNIT",
+                                baseUnit: "RADIAN",
+                                measureType: "PLANE_ANGLE_MEASURE_WITH_UNIT",
+                                noun: "plane angle",
+                                shortNoun: "angle",
+                                baseScale: 1)
     }
 
     func scaleToMM(contextID: Int) throws -> Double {
@@ -47,14 +68,22 @@ struct STEPUnits {
         }
         var fallback: Double?
         for id in try assigned.parameters.references(at: 0) {
-            guard let measure = try file.components(id).first(where: { $0.type == "UNCERTAINTY_MEASURE_WITH_UNIT" }) else { continue }
+            guard let measure = try file.components(id).first(where: { $0.type == "UNCERTAINTY_MEASURE_WITH_UNIT" }) else {
+                continue
+            }
             let parameters = measure.parameters
-            guard let value = try parameters.argument(0).number, value.isFinite, value > 0 else { continue }
+            guard let value = try parameters.argument(0).number, value.isFinite, value > 0 else {
+                continue
+            }
             let unit = try parameters.reference(at: 1)
             // An angle or other uncertainty is not a distance.
-            guard file.hasType(unit, Kind.length.unitType) else { continue }
+            guard file.hasType(unit, Kind.length.unitType) else {
+                continue
+            }
             let millimetres = try value * scale(unit, kind: .length, visited: [])
-            guard millimetres.isFinite, millimetres > 0 else { continue }
+            guard millimetres.isFinite, millimetres > 0 else {
+                continue
+            }
             if parameters.count > 2, case .string(let name) = parameters[2], name == "DISTANCE_ACCURACY_VALUE" {
                 return millimetres
             }
@@ -75,12 +104,17 @@ struct STEPUnits {
 
     private func scale(_ id: Int, kind: Kind, visited: Set<Int>) throws -> Double {
         try Task.checkCancellation()
-        guard visited.count < 64, !visited.contains(id) else { throw STEP.ParseError("Cyclic/deep unit reference #\(id)") }
+        guard visited.count < 64, !visited.contains(id) else {
+            throw STEP.ParseError("Cyclic/deep unit reference #\(id)")
+        }
         var visited = visited
         visited.insert(id)
-        guard file.hasType(id, kind.unitType) else { throw STEP.ParseError("Unit #\(id) is not a \(kind.noun) unit") }
+        guard file.hasType(id, kind.unitType) else {
+            throw STEP.ParseError("Unit #\(id) is not a \(kind.noun) unit")
+        }
         let components = try file.components(id)
         let result: Double
+
         if let si = components.first(where: { $0.type == "SI_UNIT" }) {
             guard si.parameters.count == 2, si.parameters[1].enumeration == kind.baseUnit else {
                 throw STEP.ParseError("Unsupported SI \(kind.shortNoun) unit #\(id)")
@@ -107,7 +141,11 @@ struct STEPUnits {
         } else {
             throw STEP.ParseError("Unsupported \(kind.noun) unit #\(id)")
         }
-        guard result.isFinite, result > 0 else { throw STEP.ParseError("Invalid \(kind.shortNoun) scale #\(id)") }
+
+        guard result.isFinite, result > 0 else {
+            throw STEP.ParseError("Invalid \(kind.shortNoun) scale #\(id)")
+        }
+
         return result
     }
 }

@@ -38,9 +38,13 @@ extension STEP {
         public internal(set) var failedFaceIDs: [Int] = []
         /// True when some faces of the body are missing from the mesh. Such a mesh can only
         /// under-occlude: an edge behind a missing face is not hidden.
-        public var isPartial: Bool { !failedFaceIDs.isEmpty }
+        public var isPartial: Bool {
+            !failedFaceIDs.isEmpty
+        }
 
-        public var triangleCount: Int { indices.count / 3 }
+        public var triangleCount: Int {
+            indices.count / 3
+        }
 
         /// The face a triangle belongs to.
         public func face(ofTriangle triangle: Int) -> FaceMesh? {
@@ -48,9 +52,15 @@ extension STEP {
             var high = faces.count
             while low < high {
                 let middle = (low + high) / 2
-                if faces[middle].triangles.upperBound <= triangle { low = middle + 1 } else { high = middle }
+                if faces[middle].triangles.upperBound <= triangle {
+                    low = middle + 1
+                } else {
+                    high = middle
+                }
             }
-            guard low < faces.count, faces[low].triangles.contains(triangle) else { return nil }
+            guard low < faces.count, faces[low].triangles.contains(triangle) else {
+                return nil
+            }
             return faces[low]
         }
 
@@ -85,7 +95,9 @@ extension STEP {
         /// failed with `Options.keepPartialSurfaces` off.
         public internal(set) var unsurfacedBodies: [BodyID] = []
         /// Bodies in `bodies` that are missing some faces.
-        public var partialBodies: [BodyID] { bodies.filter { $0.isPartial }.map { $0.id } }
+        public var partialBodies: [BodyID] {
+            bodies.filter { $0.isPartial }.map { $0.id }
+        }
         public internal(set) var diagnostics: [Diagnostic] = []
         /// One entry per face that failed, with the surface type and reason. Feeds `Geometry.report`.
         public internal(set) var faceFailures: [FaceFailure] = []
@@ -95,10 +107,16 @@ extension STEP {
         public internal(set) var failedFaceCount = 0
         /// Faces inside `bodies` (a partial body counts only the faces it has).
         public internal(set) var tessellatedFaceCount = 0
-        public var triangleCount: Int { bodies.reduce(0) { $0 + $1.triangleCount } }
+        public var triangleCount: Int {
+            bodies.reduce(0) { $0 + $1.triangleCount }
+        }
 
-        public init(origin: SIMD3<Double> = .zero) { self.origin = origin }
+        public init(origin: SIMD3<Double> = .zero) {
+            self.origin = origin
+        }
 
-        public func mesh(for id: BodyID) -> BodyMesh? { bodies.first { $0.id == id } }
+        public func mesh(for id: BodyID) -> BodyMesh? {
+            bodies.first { $0.id == id }
+        }
     }
 }

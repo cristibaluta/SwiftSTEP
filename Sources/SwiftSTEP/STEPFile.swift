@@ -42,7 +42,9 @@ final class STEPFile {
         try lexer.expect(.symbol(59))
         while true {
             let token = try lexer.next()
-            if token == .word("ENDSEC") { break }
+            if token == .word("ENDSEC") {
+                break
+            }
             guard case .reference(let id) = token else {
                 throw STEP.ParseError("Expected entity record", kind: token == .end ? .truncated : .malformed)
             }
@@ -68,7 +70,9 @@ final class STEPFile {
                     }
                 }
                 guard !components.isEmpty else { throw STEP.ParseError("Empty complex entity #\(id)") }
-            } else { throw STEP.ParseError("Missing type for #\(id)") }
+            } else {
+                throw STEP.ParseError("Missing type for #\(id)")
+            }
             try lexer.expect(.symbol(59))
             index[id] = components
         }
@@ -101,13 +105,19 @@ final class STEPFile {
     /// The HEADER records. Missing or unreadable records leave their fields empty.
     func header() -> STEP.Header {
         func values(_ keyword: String) -> [STEPValue] {
-            guard let range = headerRanges[keyword] else { return [] }
+            guard let range = headerRanges[keyword] else {
+                return []
+            }
             var parser = STEPParameterParser(lexer: STEPTokenizer(data: data, range: range))
-            guard (try? parser.lexer.expect(.symbol(40))) != nil, let list = try? parser.list(depth: 1) else { return [] }
+            guard (try? parser.lexer.expect(.symbol(40))) != nil, let list = try? parser.list(depth: 1) else {
+                return []
+            }
             return list
         }
         func text(_ value: STEPValue?) -> String? {
-            guard case .string(let string)? = value, !string.isEmpty else { return nil }
+            guard case .string(let string)? = value, !string.isEmpty else {
+                return nil
+            }
             return string
         }
         func texts(_ value: STEPValue?) -> [String] {
@@ -118,7 +128,9 @@ final class STEPFile {
         header.descriptions = texts(description.first)
         header.implementationLevel = text(description.count > 1 ? description[1] : nil)
         let name = values("FILE_NAME")
-        func field(_ index: Int) -> STEPValue? { index < name.count ? name[index] : nil }
+        func field(_ index: Int) -> STEPValue? {
+            index < name.count ? name[index] : nil
+        }
         header.name = text(field(0))
         header.timestamp = text(field(1))
         header.authors = texts(field(2))
@@ -140,8 +152,12 @@ final class STEPFile {
 
     func components(_ id: Int) throws -> [STEPComponent] {
         try Task.checkCancellation()
-        if let cached = cache[id] { return cached }
-        guard let ranges = index[id] else { throw STEP.ParseError("Missing entity #\(id)") }
+        if let cached = cache[id] {
+            return cached
+        }
+        guard let ranges = index[id] else {
+            throw STEP.ParseError("Missing entity #\(id)")
+        }
         let parsed = try ranges.map { component in
             var parser = STEPParameterParser(lexer: STEPTokenizer(data: data, range: component.range))
             try parser.lexer.expect(.symbol(40))
@@ -170,12 +186,24 @@ private struct STEPParameterParser {
         }
         var values: [STEPValue] = []
         var token = try lexer.next()
-        if token == .symbol(41) { return values }
+        if token == .symbol(41) {
+
+            return values
+
+        }
         while true {
             values.append(try value(token, depth: depth))
             token = try lexer.next()
-            if token == .symbol(41) { return values }
-            guard token == .symbol(44) else { throw STEP.ParseError("Expected parameter comma") }
+            if token == .symbol(41) {
+
+                return values
+
+            }
+            guard token == .symbol(44) else {
+
+                throw STEP.ParseError("Expected parameter comma")
+
+            }
             token = try lexer.next()
         }
     }
@@ -200,17 +228,25 @@ private struct STEPParameterParser {
 
 extension Array where Element == STEPValue {
     func argument(_ index: Int) throws -> STEPValue {
-        guard indices.contains(index) else { throw STEP.ParseError("Missing parameter \(index)") }
+        guard indices.contains(index) else {
+            throw STEP.ParseError("Missing parameter \(index)")
+        }
         return self[index]
     }
     func reference(at index: Int) throws -> Int {
-        guard let id = try argument(index).reference else { throw STEP.ParseError("Expected reference at parameter \(index)") }
+        guard let id = try argument(index).reference else {
+            throw STEP.ParseError("Expected reference at parameter \(index)")
+        }
         return id
     }
     func references(at index: Int) throws -> [Int] {
-        guard let values = try argument(index).list else { throw STEP.ParseError("Expected reference list at parameter \(index)") }
+        guard let values = try argument(index).list else {
+            throw STEP.ParseError("Expected reference list at parameter \(index)")
+        }
         return try values.map {
-            guard let id = $0.reference else { throw STEP.ParseError("Expected reference in list") }
+            guard let id = $0.reference else {
+                throw STEP.ParseError("Expected reference in list")
+            }
             return id
         }
     }

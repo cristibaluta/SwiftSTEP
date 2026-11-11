@@ -27,7 +27,9 @@ enum STEPPolygonTriangulator {
 
     /// The signed area of a loop in (u, v), positive when it runs counter-clockwise.
     static func signedArea(_ points: [Vertex]) -> Double {
-        guard let origin = points.first else { return 0 }
+        guard let origin = points.first else {
+            return 0
+        }
         var sum = 0.0
         var previous = points[points.count - 1]
         for point in points {
@@ -41,16 +43,22 @@ enum STEPPolygonTriangulator {
     /// `outer` and each of `holes` are closed loops without a repeated end point, in either
     /// direction. The result's vertices are the used boundary points, unchanged.
     static func triangulate(outer: [Vertex], holes: [[Vertex]], triangleLimit: Int) throws -> STEPSlabTriangulator.Result {
-        guard outer.count >= 3 else { throw STEP.ParseError("Face has no boundary") }
+        guard outer.count >= 3 else {
+            throw STEP.ParseError("Face has no boundary")
+        }
         var all = outer
-        for hole in holes { all.append(contentsOf: hole) }
+        for hole in holes {
+            all.append(contentsOf: hole)
+        }
         for vertex in all {
             guard vertex.u.isFinite, vertex.v.isFinite else {
                 throw STEP.ParseError("Face boundary has nonfinite coordinates")
             }
         }
         let outerArea = abs(signedArea(outer))
-        guard outerArea > 0 else { throw STEP.ParseError("Face boundary has no area") }
+        guard outerArea > 0 else {
+            throw STEP.ParseError("Face boundary has no area")
+        }
 
         var chain = Chain()
         guard var outerNode = chain.addRing(outer, offset: 0, counterClockwise: true) else {
@@ -64,12 +72,16 @@ enum STEPPolygonTriangulator {
             }
             offset += hole.count
         }
-        if !rings.isEmpty { outerNode = chain.eliminateHoles(rings, outer: outerNode) }
+        if !rings.isEmpty {
+            outerNode = chain.eliminateHoles(rings, outer: outerNode)
+        }
         try chain.earcutLinked(outerNode, pass: 0)
 
         // Check the result against what it must be: the outer area minus the holes.
         var expected = outerArea
-        for hole in holes { expected -= abs(signedArea(hole)) }
+        for hole in holes {
+            expected -= abs(signedArea(hole))
+        }
         var covered = 0.0
         for triangle in chain.triangles {
             let a = all[triangle.x], b = all[triangle.y], c = all[triangle.z]
@@ -82,12 +94,15 @@ enum STEPPolygonTriangulator {
         guard !chain.triangles.isEmpty, abs(covered - expected) <= 1e-6 * outerArea else {
             throw STEP.ParseError("Planar face boundary could not be triangulated (loops cross or touch)")
         }
-        guard chain.triangles.count <= triangleLimit else { throw STEP.ParseError("Triangle limit exceeded") }
+        guard chain.triangles.count <= triangleLimit else {
+            throw STEP.ParseError("Triangle limit exceeded")
+        }
 
         // Only the points the triangles use, in the order they first appear.
         var result = STEPSlabTriangulator.Result()
         var mapped = [Int](repeating: -1, count: all.count)
         result.triangles.reserveCapacity(chain.triangles.count)
+
         for triangle in chain.triangles {
             var corners = SIMD3<Int>(0, 0, 0)
             for k in 0..<3 {
@@ -126,15 +141,19 @@ enum STEPPolygonTriangulator {
             prev.append(-1)
             next.append(-1)
             steiner.append(false)
+
             return vertex.count - 1
         }
 
         /// Links `points` as a ring running the wanted way round; returns its first node.
         mutating func addRing(_ points: [Vertex], offset: Int, counterClockwise: Bool) -> Int? {
-            guard !points.isEmpty else { return nil }
+            guard !points.isEmpty else {
+                return nil
+            }
             let forward = (STEPPolygonTriangulator.signedArea(points) > 0) == counterClockwise
             var first = -1
             var last = -1
+
             for k in points.indices {
                 let i = forward ? k : points.count - 1 - k
                 let node = add(vertex: offset + i, x: points[i].u, y: points[i].v)
@@ -148,6 +167,7 @@ enum STEPPolygonTriangulator {
             }
             next[last] = first
             prev[first] = last
+
             return first
         }
 
@@ -158,7 +178,9 @@ enum STEPPolygonTriangulator {
             (y[q] - y[p]) * (x[r] - x[q]) - (x[q] - x[p]) * (y[r] - y[q])
         }
 
-        func equals(_ a: Int, _ b: Int) -> Bool { x[a] == x[b] && y[a] == y[b] }
+        func equals(_ a: Int, _ b: Int) -> Bool {
+            x[a] == x[b] && y[a] == y[b]
+        }
 
         private static func inTriangle(_ ax: Double, _ ay: Double, _ bx: Double, _ by: Double,
                                        _ cx: Double, _ cy: Double, _ px: Double, _ py: Double) -> Bool {
@@ -172,18 +194,22 @@ enum STEPPolygonTriangulator {
                 && y[q] <= max(y[p], y[r]) && y[q] >= min(y[p], y[r])
         }
 
-        private static func sign(_ value: Double) -> Int { value > 0 ? 1 : (value < 0 ? -1 : 0) }
+        private static func sign(_ value: Double) -> Int {
+            value > 0 ? 1 : (value < 0 ? -1 : 0)
+        }
 
         private func intersects(_ p1: Int, _ q1: Int, _ p2: Int, _ q2: Int) -> Bool {
             let o1 = Self.sign(area(p1, q1, p2))
             let o2 = Self.sign(area(p1, q1, q2))
             let o3 = Self.sign(area(p2, q2, p1))
             let o4 = Self.sign(area(p2, q2, q1))
+
             if o1 != o2 && o3 != o4 { return true }
             if o1 == 0 && onSegment(p1, p2, q1) { return true }
             if o2 == 0 && onSegment(p1, q2, q1) { return true }
             if o3 == 0 && onSegment(p2, p1, q2) { return true }
             if o4 == 0 && onSegment(p2, q1, q2) { return true }
+
             return false
         }
 
@@ -200,6 +226,7 @@ enum STEPPolygonTriangulator {
             var inside = false
             let px = (x[a] + x[b]) / 2
             let py = (y[a] + y[b]) / 2
+
             repeat {
                 let n = next[p]
                 if (y[p] > py) != (y[n] > py), y[n] != y[p],
@@ -208,24 +235,33 @@ enum STEPPolygonTriangulator {
                 }
                 p = n
             } while p != a
+
             return inside
         }
 
         private func intersectsPolygon(_ a: Int, _ b: Int) -> Bool {
             var p = a
+
             repeat {
                 let n = next[p]
                 if vertex[p] != vertex[a], vertex[n] != vertex[a], vertex[p] != vertex[b], vertex[n] != vertex[b],
-                   intersects(p, n, a, b) { return true }
+                   intersects(p, n, a, b) {
+                    return true
+                }
                 p = n
             } while p != a
+
             return false
         }
 
         private func isValidDiagonal(_ a: Int, _ b: Int) -> Bool {
-            guard vertex[next[a]] != vertex[b], vertex[prev[a]] != vertex[b], !intersectsPolygon(a, b) else { return false }
+            guard vertex[next[a]] != vertex[b], vertex[prev[a]] != vertex[b], !intersectsPolygon(a, b) else {
+                return false
+            }
             if locallyInside(a, b), locallyInside(b, a), middleInside(a, b),
-               area(prev[a], a, prev[b]) != 0 || area(a, prev[b], b) != 0 { return true }
+               area(prev[a], a, prev[b]) != 0 || area(a, prev[b], b) != 0 {
+                return true
+            }
             return equals(a, b) && area(prev[a], a, next[a]) > 0 && area(prev[b], b, next[b]) > 0
         }
 
@@ -256,6 +292,7 @@ enum STEPPolygonTriangulator {
             prev[a2] = b2
             next[bp] = b2
             prev[b2] = bp
+
             return b2
         }
 
@@ -264,18 +301,22 @@ enum STEPPolygonTriangulator {
             var end = endNode ?? start
             var p = start
             var again: Bool
+
             repeat {
                 again = false
                 if !steiner[p] && (equals(p, next[p]) || area(prev[p], p, next[p]) == 0) {
                     removeNode(p)
                     end = prev[p]
                     p = end
-                    if p == next[p] { break }
+                    if p == next[p] {
+                        break
+                    }
                     again = true
                 } else {
                     p = next[p]
                 }
             } while again || p != end
+
             return end
         }
 
@@ -284,10 +325,14 @@ enum STEPPolygonTriangulator {
         private func leftmost(_ start: Int) -> Int {
             var p = start
             var best = start
+
             repeat {
-                if x[p] < x[best] || (x[p] == x[best] && y[p] < y[best]) { best = p }
+                if x[p] < x[best] || (x[p] == x[best] && y[p] < y[best]) {
+                    best = p
+                }
                 p = next[p]
             } while p != start
+
             return best
         }
 
@@ -299,26 +344,35 @@ enum STEPPolygonTriangulator {
             let hy = y[hole]
             var qx = -Double.infinity
             var m = -1
+
             repeat {
-                if equals(hole, p) { return p }
+                if equals(hole, p) {
+                    return p
+                }
                 let n = next[p]
                 if hy <= y[p] && hy >= y[n] && y[n] != y[p] {
                     let crossing = x[p] + (hy - y[p]) * (x[n] - x[p]) / (y[n] - y[p])
                     if crossing <= hx && crossing > qx {
                         qx = crossing
                         m = x[p] < x[n] ? p : n
-                        if crossing == hx { return m }
+                        if crossing == hx {
+                            return m
+                        }
                     }
                 }
                 p = n
             } while p != outer
-            guard m >= 0 else { return nil }
+
+            guard m >= 0 else {
+                return nil
+            }
 
             let stop = m
             let mx = x[m]
             let my = y[m]
             var tanMin = Double.infinity
             p = m
+
             repeat {
                 if hx >= x[p] && x[p] >= mx && hx != x[p],
                    Self.inTriangle(hy < my ? hx : qx, hy, mx, my, hy < my ? qx : hx, hy, x[p], y[p]) {
@@ -331,6 +385,7 @@ enum STEPPolygonTriangulator {
                 }
                 p = next[p]
             } while p != stop
+
             return m
         }
 
@@ -341,7 +396,9 @@ enum STEPPolygonTriangulator {
             let ys = y
             let queue = holes.map { leftmost($0) }.sorted { xs[$0] != xs[$1] ? xs[$0] < xs[$1] : ys[$0] < ys[$1] }
             for hole in queue {
-                guard let bridge = findHoleBridge(hole, outer) else { continue }
+                guard let bridge = findHoleBridge(hole, outer) else {
+                    continue
+                }
                 let reverse = splitPolygon(bridge, hole)
                 _ = filterPoints(reverse, next[reverse])
                 outer = filterPoints(bridge, next[bridge])
@@ -354,18 +411,24 @@ enum STEPPolygonTriangulator {
         private func isEar(_ ear: Int) -> Bool {
             let a = prev[ear]
             let c = next[ear]
-            if area(a, ear, c) >= 0 { return false } // reflex or flat
+            if area(a, ear, c) >= 0 {
+                return false
+            } // reflex or flat
             let ax = x[a], ay = y[a], bx = x[ear], by = y[ear], cx = x[c], cy = y[c]
             let x0 = min(ax, bx, cx), x1 = max(ax, bx, cx)
             let y0 = min(ay, by, cy), y1 = max(ay, by, cy)
             var p = next[c]
+
             while p != a {
                 if x[p] >= x0 && x[p] <= x1 && y[p] >= y0 && y[p] <= y1
                     && !(ax == x[p] && ay == y[p])
                     && Self.inTriangle(ax, ay, bx, by, cx, cy, x[p], y[p])
-                    && area(prev[p], p, next[p]) >= 0 { return false }
+                    && area(prev[p], p, next[p]) >= 0 {
+                    return false
+                }
                 p = next[p]
             }
+
             return true
         }
 
@@ -374,6 +437,7 @@ enum STEPPolygonTriangulator {
         mutating func earcutLinked(_ start: Int, pass: Int) throws {
             var ear = start
             var stop = ear
+
             while prev[ear] != next[ear] {
                 work += 1
                 if work & 255 == 0 { try Task.checkCancellation() }
@@ -406,6 +470,7 @@ enum STEPPolygonTriangulator {
         private mutating func cureLocalIntersections(_ startNode: Int) -> Int {
             var start = startNode
             var p = start
+
             repeat {
                 let a = prev[p]
                 let b = next[next[p]]
@@ -418,12 +483,14 @@ enum STEPPolygonTriangulator {
                 }
                 p = next[p]
             } while p != start
+
             return filterPoints(p)
         }
 
         /// Last resort: cut the ring in two along a diagonal that stays inside it, and start over on each half.
         private mutating func splitEarcut(_ start: Int) throws {
             var a = start
+
             repeat {
                 var b = next[next[a]]
                 while b != prev[a] {
@@ -441,4 +508,5 @@ enum STEPPolygonTriangulator {
             } while a != start
         }
     }
+
 }

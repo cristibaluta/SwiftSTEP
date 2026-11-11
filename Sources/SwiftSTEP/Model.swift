@@ -276,9 +276,13 @@ extension STEP {
         /// with an `instance-limit` diagnostic. The triangle cap above applies to the instances too.
         public var maximumInstanceCount: Int
 
-        public init(assumedUnitScaleToMM: Double? = nil, chordToleranceMM: Double = 0.01,
-                    maximumEntityCount: Int = 2_000_000, keepPartialSurfaces: Bool = true,
-                    maximumTriangleCount: Int = 1_000_000, maximumInstanceCount: Int = 100_000) {
+        public init(assumedUnitScaleToMM: Double? = nil,
+                    chordToleranceMM: Double = 0.01,
+                    maximumEntityCount: Int = 2_000_000,
+                    keepPartialSurfaces: Bool = true,
+                    maximumTriangleCount: Int = 1_000_000,
+                    maximumInstanceCount: Int = 100_000) {
+            
             self.assumedUnitScaleToMM = assumedUnitScaleToMM
             self.chordToleranceMM = chordToleranceMM
             self.maximumEntityCount = maximumEntityCount
@@ -329,7 +333,10 @@ extension STEP.Geometry {
             !faces.faceFailures.contains { $0.faceID == note.entityID && $0.faceID != nil }
                 && !faces.unsurfacedBodies.contains { $0.entityID == note.entityID }
         }
-        for note in other { lines.append("  surface note \(note)") }
+        for note in other {
+            lines.append("  surface note \(note)")
+        }
+
         return lines.joined(separator: "\n")
     }
 

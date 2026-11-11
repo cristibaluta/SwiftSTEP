@@ -11,8 +11,12 @@ struct STEPConicGeometry {
     let semiAxisY: Double // mm, along frame.y
     let isEllipse: Bool   // which entity it came from, not the axis ratio
 
-    var noun: String { isEllipse ? "ellipse" : "circle" }
-    var largestAxis: Double { max(semiAxisX, semiAxisY) }
+    var noun: String {
+        isEllipse ? "ellipse" : "circle"
+    }
+    var largestAxis: Double {
+        max(semiAxisX, semiAxisY)
+    }
 
     func point(at angle: Double) -> SIMD3<Double> {
         frame.origin + semiAxisX * cos(angle) * frame.x + semiAxisY * sin(angle) * frame.y
@@ -245,16 +249,21 @@ final class STEPCurveResolver {
             return ends(start, start, closed: true)
         }
         let names = try file.components(basisID).map(\.type).joined(separator: "/")
+
         throw STEP.ParseError("Unsupported curve \(names) at #\(basisID) (it has no ends of its own); edge skipped")
     }
 
-    private func resolve(basisID: Int, trimParameters: [STEPValue]?,
+    private func resolve(basisID: Int,
+                         trimParameters: [STEPValue]?,
                          ends: () throws -> EdgeEnds) throws -> STEPResolvedCurve {
+
         if file.hasType(basisID, "LINE") {
             // A line is fully determined by its end points; trims add nothing for display.
             let e = try ends()
             let points = [e.start, e.end]
-            guard points[0] != points[1] else { throw STEP.ParseError("Degenerate line edge") }
+            guard points[0] != points[1] else {
+                throw STEP.ParseError("Degenerate line edge")
+            }
             try checkVerticesOnLine(basisID, vertexIDs: (e.startVertexID, e.endVertexID), points: (points[0], points[1]))
             return STEPResolvedCurve(kind: .line, points: points, chordError: 0, warning: nil, curve: .line)
         }
@@ -286,6 +295,7 @@ final class STEPCurveResolver {
     /// Each segment is resolved on its own (it needs trim points or a bounded curve), reversed when
     /// its `same_sense` is false, and must start where the one before it ends.
     private func compositeRun(_ compositeID: Int) throws -> STEPResolvedCurve {
+
         let segmentIDs = try file.parameters(compositeID, type: "COMPOSITE_CURVE").references(at: 1)
         guard (1...Self.maximumCompositeSegments).contains(segmentIDs.count) else {
             throw STEP.ParseError("Composite curve #\(compositeID) needs 1...\(Self.maximumCompositeSegments) segments, found \(segmentIDs.count)")
@@ -323,7 +333,9 @@ final class STEPCurveResolver {
     /// Orients a composite run for an edge and pins its ends to the edge's vertices.
     private func fit(_ run: STEPResolvedCurve, startVertexID: Int, endVertexID: Int, sameSense: Bool) throws -> STEPResolvedCurve {
         var points = run.points
-        if !sameSense { points.reverse() }
+        if !sameSense {
+            points.reverse()
+        }
         let start = try vertex(startVertexID)
         let end = try vertex(endVertexID)
         let tolerance = boundedTolerance(points)
@@ -337,19 +349,26 @@ final class STEPCurveResolver {
         }
         points[0] = start
         points[points.count - 1] = end
+
         return STEPResolvedCurve(kind: .composite, points: points, chordError: run.chordError, warning: run.warning)
     }
 
     /// Both vertices must lie on the LINE, within the same kind of tolerance the other curves use.
     /// A line whose own definition cannot be read is not checked: its vertices still define the edge.
-    private func checkVerticesOnLine(_ lineID: Int, vertexIDs: (start: Int, end: Int),
+    private func checkVerticesOnLine(_ lineID: Int,
+                                     vertexIDs: (start: Int, end: Int),
                                      points: (start: SIMD3<Double>, end: SIMD3<Double>)) throws {
+
         guard let parameters = try? file.parameters(lineID, type: "LINE"),
               let origin = try? cartesianPoint(parameters.reference(at: 1)),
               let vectorParameters = try? file.parameters(parameters.reference(at: 2), type: "VECTOR"),
-              let axis = try? direction(vectorParameters.reference(at: 1)) else { return }
+              let axis = try? direction(vectorParameters.reference(at: 1)) else {
+            return
+        }
+
         let length = simd_distance(points.start, points.end)
         let tolerance = tolerances.vertexOnCurve(extent: length)
+
         for (isStart, vertexID, point) in [(true, vertexIDs.start, points.start), (false, vertexIDs.end, points.end)] {
             let offset = simd_length(simd_cross(point - origin, axis))
             guard offset <= tolerance else {
@@ -381,7 +400,8 @@ final class STEPCurveResolver {
             let wanted = step > 0 ? (abs(span.sweep) / step - 1e-9).rounded(.up) : Double.infinity
             let count = Int(min(max(wanted, 2), Double(STEPArcSampler.maximumSegments)))
             let parameters = (0...count).map { span.start + span.sweep * Double($0) / Double(count) }
-            let sampling = STEPAdaptiveSampler.sample(parameters: parameters, tolerance: chordTolerance,
+            let sampling = STEPAdaptiveSampler.sample(parameters: parameters,
+                                                      tolerance: chordTolerance,
                                                       pointBudget: STEPArcSampler.maximumSegments + 1) { conic.point(at: $0) }
             points = sampling.points
             chordError = sampling.deviation
@@ -428,7 +448,9 @@ final class STEPCurveResolver {
             high = simd_max(high, point)
         }
         var magnitude = 0.0
-        for axis in 0..<3 { magnitude = max(magnitude, abs(low[axis]), abs(high[axis])) }
+        for axis in 0..<3 {
+            magnitude = max(magnitude, abs(low[axis]), abs(high[axis]))
+        }
         // CAD exports often place a vertex a few thousandths of a millimetre off a freeform curve
         // (the file's own accuracy is typically 0.01 mm), so the floor follows the chord tolerance
         // and the accuracy the file declares; see `STEPTolerances.vertexOnCurve`.
@@ -441,9 +463,15 @@ final class STEPCurveResolver {
     /// (`sense_agreement`) and, for B-splines, proof that a closed edge covers the whole curve.
     /// A vertex at the start of a closed curve is also at its end, so such a vertex takes the
     /// end its role needs: an edge's start vertex begins its own traversal.
-    private func boundedPieces(domain: ClosedRange<Double>, curveStart: SIMD3<Double>, curveEnd: SIMD3<Double>,
-                               trim: STEPTrimSpec?, trimCoversDomain: Bool, ends: EdgeEnds, tolerance: Double,
+    private func boundedPieces(domain: ClosedRange<Double>,
+                               curveStart: SIMD3<Double>,
+                               curveEnd: SIMD3<Double>,
+                               trim: STEPTrimSpec?,
+                               trimCoversDomain: Bool,
+                               ends: EdgeEnds,
+                               tolerance: Double,
                                project: (SIMD3<Double>) -> (t: Double, distance: Double)) throws -> [Piece] {
+
         let low = domain.lowerBound
         let high = domain.upperBound
         let epsilon = 1e-9 * (high - low)
@@ -453,9 +481,15 @@ final class STEPCurveResolver {
         func parameter(of point: SIMD3<Double>, isStart: Bool, vertexID: Int) throws -> Double {
             let atLow = simd_distance(point, curveStart) <= tolerance
             let atHigh = simd_distance(point, curveEnd) <= tolerance
-            if atLow && atHigh { return isStart == forward ? low : high }
-            if atLow { return low }
-            if atHigh { return high }
+            if atLow && atHigh {
+                return isStart == forward ? low : high
+            }
+            if atLow {
+                return low
+            }
+            if atHigh {
+                return high
+            }
             let result = project(point)
             guard result.distance <= tolerance else {
                 throw STEP.ParseError("Edge \(isStart ? "start" : "end") vertex #\(vertexID) is not on its curve (off by \(result.distance) mm)")
@@ -479,12 +513,22 @@ final class STEPCurveResolver {
         let a = try parameter(of: ends.start, isStart: true, vertexID: ends.startVertexID)
         let b = try parameter(of: ends.end, isStart: false, vertexID: ends.endVertexID)
         if forward {
-            if a < b - epsilon { return [Piece(from: a, to: b)] }
-            guard closed else { throw STEP.ParseError("Edge vertices contradict the curve direction") }
+            if a < b - epsilon {
+                return [Piece(from: a, to: b)]
+            }
+            guard closed else {
+                throw STEP.ParseError("Edge vertices contradict the curve direction")
+            }
             return nonEmpty([Piece(from: a, to: high), Piece(from: low, to: b)])
         }
-        if a > b + epsilon { return [Piece(from: a, to: b)] }
-        guard closed else { throw STEP.ParseError("Edge vertices contradict the curve direction") }
+
+        if a > b + epsilon {
+            return [Piece(from: a, to: b)]
+        }
+        guard closed else {
+            throw STEP.ParseError("Edge vertices contradict the curve direction")
+        }
+
         return nonEmpty([Piece(from: a, to: low), Piece(from: high, to: b)])
     }
 
@@ -546,31 +590,45 @@ final class STEPCurveResolver {
 
     private func resolvePolyline(_ polyline: Polyline, trim: STEPTrimSpec?, ends: EdgeEnds) throws -> STEPResolvedCurve {
         let tolerance = boundedTolerance(polyline.points)
-        let pieces = try boundedPieces(domain: polyline.domain, curveStart: polyline.points[0], curveEnd: polyline.points[polyline.points.count - 1],
-                                       trim: trim, trimCoversDomain: false, ends: ends, tolerance: tolerance,
+        let pieces = try boundedPieces(domain: polyline.domain,
+                                       curveStart: polyline.points[0],
+                                       curveEnd: polyline.points[polyline.points.count - 1],
+                                       trim: trim,
+                                       trimCoversDomain: false, ends: ends,
+                                       tolerance: tolerance,
                                        project: { polyline.closest(to: $0) })
         let runs = pieces.map { piece -> [SIMD3<Double>] in
-            piece.from <= piece.to ? polyline.run(from: piece.from, to: piece.to)
-                                   : Array(polyline.run(from: piece.to, to: piece.from).reversed())
+            piece.from <= piece.to
+                ? polyline.run(from: piece.from, to: piece.to)
+                : Array(polyline.run(from: piece.to, to: piece.from).reversed())
         }
         var points = joined(runs)
-        guard points.count >= 2 else { throw STEP.ParseError("Degenerate polyline edge") }
+        guard points.count >= 2 else {
+            throw STEP.ParseError("Degenerate polyline edge")
+        }
         points[0] = ends.start
         points[points.count - 1] = ends.end
+
         return STEPResolvedCurve(kind: .polyline, points: points, chordError: 0, warning: nil)
     }
 
     // MARK: B-splines
 
     private func integer(_ value: STEPValue) throws -> Int {
-        guard case .integer(let result) = value else { throw STEP.ParseError("Expected an integer in B-spline data") }
+        guard case .integer(let result) = value else {
+            throw STEP.ParseError("Expected an integer in B-spline data")
+        }
         return result
     }
 
     private func numbers(_ value: STEPValue) throws -> [Double] {
-        guard let items = value.list else { throw STEP.ParseError("Expected a list of numbers in B-spline data") }
+        guard let items = value.list else {
+            throw STEP.ParseError("Expected a list of numbers in B-spline data")
+        }
         return try items.map {
-            guard let number = $0.number, number.isFinite else { throw STEP.ParseError("Nonfinite B-spline number") }
+            guard let number = $0.number, number.isFinite else {
+                throw STEP.ParseError("Nonfinite B-spline number")
+            }
             return number
         }
     }
@@ -612,20 +670,25 @@ final class STEPCurveResolver {
     /// BEZIER_CURVE, UNIFORM_B_SPLINE_CURVE and QUASI_UNIFORM_CURVE types, simple or complex, whose
     /// knots are implied.
     func splineGeometry(_ id: Int) throws -> STEPBSpline {
+
         let parts = try file.components(id)
         let degree: Int
         let controlIDs: [Int]
         let multiplicities: [Int]
         let knots: [Double]
         var weights: [Double]?
+
         if let base = parts.first(where: { $0.type == "B_SPLINE_CURVE" }),
            let withKnots = parts.first(where: { $0.type == "B_SPLINE_CURVE_WITH_KNOTS" }) {
+
             degree = try integer(base.parameters.argument(0))
             controlIDs = try base.parameters.references(at: 1)
             guard let list = try withKnots.parameters.argument(0).list else { throw STEP.ParseError("Expected knot multiplicities") }
             multiplicities = try list.map { try integer($0) }
             knots = try numbers(withKnots.parameters.argument(1))
+
         } else if let kind = Self.generatedSplineTypes.first(where: { name in parts.contains { $0.type == name } }) {
+
             if let base = parts.first(where: { $0.type == "B_SPLINE_CURVE" }) {
                 degree = try integer(base.parameters.argument(0))
                 controlIDs = try base.parameters.references(at: 1)
@@ -639,12 +702,17 @@ final class STEPCurveResolver {
                 throw STEP.ParseError("B-spline #\(id) has too many control points")
             }
             (multiplicities, knots) = try Self.generatedKnots(kind, degree: degree, count: controlIDs.count)
+
         } else if let simple = parts.first(where: { $0.type == "B_SPLINE_CURVE_WITH_KNOTS" }), simple.parameters.count == 9 {
+
             degree = try integer(simple.parameters.argument(1))
             controlIDs = try simple.parameters.references(at: 2)
-            guard let list = try simple.parameters.argument(6).list else { throw STEP.ParseError("Expected knot multiplicities") }
+            guard let list = try simple.parameters.argument(6).list else {
+                throw STEP.ParseError("Expected knot multiplicities")
+            }
             multiplicities = try list.map { try integer($0) }
             knots = try numbers(simple.parameters.argument(7))
+
         } else {
             throw STEP.ParseError("Unsupported B-spline layout at #\(id)")
         }
@@ -691,7 +759,9 @@ final class STEPCurveResolver {
             budget -= sampling.points.count
         }
         var points = joined(runs)
-        guard points.count >= 2 else { throw STEP.ParseError("Degenerate B-spline edge") }
+        guard points.count >= 2 else {
+            throw STEP.ParseError("Degenerate B-spline edge")
+        }
         points[0] = ends.start
         points[points.count - 1] = ends.end
         guard points.allSatisfy({ point in (0..<3).allSatisfy { point[$0].isFinite } }) else {
@@ -781,7 +851,9 @@ final class STEPCurveResolver {
             vector[axis] = value
         }
         let length = simd_length(vector)
-        guard length.isFinite, length > 0 else { throw STEP.ParseError("Zero-length direction #\(id)") }
+        guard length.isFinite, length > 0 else {
+            throw STEP.ParseError("Zero-length direction #\(id)")
+        }
         return vector / length
     }
 
@@ -808,6 +880,7 @@ final class STEPCurveResolver {
             throw STEP.ParseError("Degenerate placement #\(id): reference direction is parallel to the axis")
         }
         let x = projected / length
+
         return STEP.Frame(origin: origin, x: x, y: simd_cross(z, x), z: z)
     }
 
@@ -823,7 +896,10 @@ final class STEPCurveResolver {
             return length * scale
         }
         let first = try axis(2)
-        return STEPConicGeometry(frame: frame, semiAxisX: first, semiAxisY: isEllipse ? try axis(3) : first,
+
+        return STEPConicGeometry(frame: frame,
+                                 semiAxisX: first,
+                                 semiAxisY: isEllipse ? try axis(3) : first,
                                  isEllipse: isEllipse)
     }
 
@@ -833,13 +909,16 @@ final class STEPCurveResolver {
         guard let sense = try p.argument(4).enumeration, sense == "T" || sense == "F" else {
             throw STEP.ParseError("Invalid TRIMMED_CURVE sense_agreement")
         }
-        let masters: [String: STEPTrimSpec.Master] = ["CARTESIAN": .cartesian, "PARAMETER": .parameter,
+        let masters: [String: STEPTrimSpec.Master] = ["CARTESIAN": .cartesian,
+                                                      "PARAMETER": .parameter,
                                                       "UNSPECIFIED": .unspecified]
         guard let name = try p.argument(5).enumeration, let master = masters[name] else {
             throw STEP.ParseError("Invalid TRIMMED_CURVE master_representation")
         }
-        return STEPTrimSpec(first: try bound(p.argument(2)), second: try bound(p.argument(3)),
-                            senseAgreement: sense == "T", master: master)
+        return STEPTrimSpec(first: try bound(p.argument(2)),
+                            second: try bound(p.argument(3)),
+                            senseAgreement: sense == "T",
+                            master: master)
     }
 
     /// A trimming SET holds one point and/or one PARAMETER_VALUE.
@@ -850,11 +929,14 @@ final class STEPCurveResolver {
         var bound = STEPTrimSpec.Bound()
         for item in items {
             if let id = item.reference {
-                guard bound.point == nil else { throw STEP.ParseError("Duplicate trim point") }
+                guard bound.point == nil else {
+                    throw STEP.ParseError("Duplicate trim point")
+                }
                 bound.point = try cartesianPoint(id)
-            } else if case .typed("PARAMETER_VALUE", let values) = item, values.count == 1,
-                      let number = values[0].number, number.isFinite {
-                guard bound.parameter == nil else { throw STEP.ParseError("Duplicate trim parameter") }
+            } else if case .typed("PARAMETER_VALUE", let values) = item, values.count == 1, let number = values[0].number, number.isFinite {
+                guard bound.parameter == nil else {
+                    throw STEP.ParseError("Duplicate trim parameter")
+                }
                 bound.parameter = number
             } else {
                 throw STEP.ParseError("Unsupported trimming selection")
@@ -864,23 +946,36 @@ final class STEPCurveResolver {
     }
 
     private func optionalAngleScale() throws -> Double? {
-        do { return try angleScale() } catch is STEP.ParseError { return nil }
+        do {
+            return try angleScale()
+        } catch is STEP.ParseError {
+            return nil
+        }
     }
 
-    private func angle(of bound: STEPTrimSpec.Bound, master: STEPTrimSpec.Master,
-                       conic: STEPConicGeometry, tolerance: Double) throws -> Double {
+    private func angle(of bound: STEPTrimSpec.Bound,
+                       master: STEPTrimSpec.Master,
+                       conic: STEPConicGeometry,
+                       tolerance: Double) throws -> Double {
+
         let usePoint: Bool
         switch master {
             case .parameter: usePoint = bound.parameter == nil
             case .cartesian, .unspecified: usePoint = bound.point != nil
         }
         if usePoint {
-            guard let point = bound.point else { throw STEP.ParseError("Trim has neither point nor parameter") }
+            guard let point = bound.point else {
+                throw STEP.ParseError("Trim has neither point nor parameter")
+            }
             let projection = conic.projection(of: point)
-            guard projection.distance <= tolerance else { throw STEP.ParseError("Trim point is not on the \(conic.noun)") }
+            guard projection.distance <= tolerance else {
+                throw STEP.ParseError("Trim point is not on the \(conic.noun)")
+            }
             return projection.angle
         }
-        guard let parameter = bound.parameter else { throw STEP.ParseError("Trim has neither point nor parameter") }
+        guard let parameter = bound.parameter else {
+            throw STEP.ParseError("Trim has neither point nor parameter")
+        }
         return try parameter * angleScale()
     }
 
@@ -898,14 +993,19 @@ final class STEPCurveResolver {
         let second = try angle(of: trim.second, master: trim.master, conic: conic, tolerance: tolerance)
         if let p1 = trim.first.parameter, let p2 = trim.second.parameter, let unit = try optionalAngleScale() {
             let span = abs(p2 - p1) * unit
-            if abs(span - STEPAngle.twoPi) <= tolerances.angular { return .full }
+            if abs(span - STEPAngle.twoPi) <= tolerances.angular {
+                return .full
+            }
             if span > STEPAngle.twoPi + tolerances.angular {
                 throw STEP.ParseError("Trimmed \(conic.noun) spans more than one revolution")
             }
         }
         // sense_agreement FALSE runs trim_1 → trim_2 against the basis direction.
         let sweep = trim.senseAgreement ? STEPAngle.wrapped(second - first) : STEPAngle.wrapped(first - second)
-        if sweep <= tolerances.angular || sweep >= STEPAngle.twoPi - tolerances.angular { return .unknown }
+        if sweep <= tolerances.angular || sweep >= STEPAngle.twoPi - tolerances.angular {
+            return .unknown
+        }
+
         return .partial(start: trim.senseAgreement ? first : second, sweep: sweep)
     }
 
@@ -935,7 +1035,9 @@ final class STEPCurveResolver {
 
         let sameVertex = ends.startVertexID == ends.endVertexID
         if sameVertex || simd_distance(ends.start, ends.end) <= tolerance {
-            if case .partial? = arc { throw STEP.ParseError("Closed edge, but its trimmed curve is a partial arc") }
+            if case .partial? = arc {
+                throw STEP.ParseError("Closed edge, but its trimmed curve is a partial arc")
+            }
             if !sameVertex {
                 guard case .full? = arc else {
                     throw STEP.ParseError("Ambiguous edge: distinct vertices at the same point and nothing proves a full \(conic.noun)")
@@ -945,7 +1047,9 @@ final class STEPCurveResolver {
         }
 
         let magnitude = forward ? STEPAngle.wrapped(b.angle - a.angle) : STEPAngle.wrapped(a.angle - b.angle)
-        guard magnitude > 1e-9 else { throw STEP.ParseError("Degenerate \(conic.noun) edge") }
+        guard magnitude > 1e-9 else {
+            throw STEP.ParseError("Degenerate \(conic.noun) edge")
+        }
         if let arc {
             guard case .partial(let trimStart, let trimSweep) = arc,
                   STEPAngle.distance(forward ? a.angle : b.angle, trimStart) <= tolerances.angular,

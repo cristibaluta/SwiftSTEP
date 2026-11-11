@@ -1,3 +1,4 @@
+
 import Foundation
 
 /// Unpacks gzip-compressed STEP (`.stpz`, or `.step.gz`): the bytes are recognised by the gzip
@@ -15,7 +16,9 @@ enum STEPGzip {
 
     /// `data` itself when it is not gzip.
     static func inflateIfGzip(_ data: Data) throws -> Data {
-        guard isGzip(data) else { return data }
+        guard isGzip(data) else {
+            return data
+        }
         #if canImport(Darwin)
         let bytes = [UInt8](data)
         guard bytes.count >= 18, bytes[2] == 8 else {
@@ -24,19 +27,33 @@ enum STEPGzip {
         let flags = bytes[3]
         var position = 10
         func skipTerminated() throws {
-            while position < bytes.count, bytes[position] != 0 { position += 1 }
-            guard position < bytes.count else { throw STEP.ParseError("Truncated gzip header", kind: .truncated) }
+            while position < bytes.count, bytes[position] != 0 {
+                position += 1
+            }
+            guard position < bytes.count else {
+                throw STEP.ParseError("Truncated gzip header", kind: .truncated)
+            }
             position += 1
         }
         if flags & 0x04 != 0 {                      // FEXTRA
-            guard position + 2 <= bytes.count else { throw STEP.ParseError("Truncated gzip header", kind: .truncated) }
+            guard position + 2 <= bytes.count else {
+                throw STEP.ParseError("Truncated gzip header", kind: .truncated)
+            }
             position += 2 + Int(bytes[position]) + Int(bytes[position + 1]) << 8
         }
-        if flags & 0x08 != 0 { try skipTerminated() } // FNAME
-        if flags & 0x10 != 0 { try skipTerminated() } // FCOMMENT
-        if flags & 0x02 != 0 { position += 2 }        // FHCRC
+        if flags & 0x08 != 0 {
+            try skipTerminated()
+        } // FNAME
+        if flags & 0x10 != 0 {
+            try skipTerminated()
+        } // FCOMMENT
+        if flags & 0x02 != 0 {
+            position += 2
+        }        // FHCRC
         let trailer = bytes.count - 8
-        guard position < trailer else { throw STEP.ParseError("Truncated gzip data", kind: .truncated) }
+        guard position < trailer else {
+            throw STEP.ParseError("Truncated gzip data", kind: .truncated)
+        }
 
         // ISIZE: the uncompressed length modulo 2^32, little endian.
         let declared = (0..<4).reduce(0) { $0 | Int(bytes[trailer + 4 + $1]) << (8 * $1) }

@@ -59,7 +59,9 @@ enum STEPSlabTriangulator {
     static let maximumRowsPerColumn = 512
 
     static func triangulate(_ segments: [Segment], sampling: Sampling, triangleLimit: Int) throws -> Result {
-        guard !segments.isEmpty else { throw STEP.ParseError("Face has no boundary") }
+        guard !segments.isEmpty else {
+            throw STEP.ParseError("Face has no boundary")
+        }
         var allU: [Double] = []
         allU.reserveCapacity(segments.count * 2)
         for segment in segments {
@@ -85,10 +87,14 @@ enum STEPSlabTriangulator {
             var b = segment.b
             a.u = snap(a.u, to: representatives)
             b.u = snap(b.u, to: representatives)
-            if a.u == b.u { continue }
+            if a.u == b.u {
+                continue
+            }
             edges.append(a.u < b.u ? Segment(a: a, b: b) : Segment(a: b, b: a))
         }
-        guard !edges.isEmpty else { throw STEP.ParseError("Face boundary is vertical in parameter space") }
+        guard !edges.isEmpty else {
+            throw STEP.ParseError("Face boundary is vertical in parameter space")
+        }
         edges.sort { $0.a.u < $1.a.u }
 
         var breaks = representatives
@@ -96,11 +102,15 @@ enum STEPSlabTriangulator {
             let low = representatives[0]
             let high = representatives[representatives.count - 1]
             let count = Int(((high - low) / step).rounded(.down))
-            guard count <= maximumLatticeSlabs else { throw STEP.ParseError("Face needs too many subdivisions") }
+            guard count <= maximumLatticeSlabs else {
+                throw STEP.ParseError("Face needs too many subdivisions")
+            }
             if count >= 1 {
                 for k in 1...count {
                     let u = low + Double(k) * step
-                    if u < high - epsilon, abs(snap(u, to: representatives) - u) > epsilon { breaks.append(u) }
+                    if u < high - epsilon, abs(snap(u, to: representatives) - u) > epsilon {
+                        breaks.append(u)
+                    }
                 }
                 breaks.sort()
             }
@@ -111,14 +121,18 @@ enum STEPSlabTriangulator {
         var next = 0
         var previousRight: [ColumnKey: [Int]] = [:]
         for k in 0..<(breaks.count - 1) {
-            if k & 127 == 0 { try Task.checkCancellation() }
+            if k & 127 == 0 {
+                try Task.checkCancellation()
+            }
             let leftU = breaks[k]
             let rightU = breaks[k + 1]
             while next < edges.count, edges[next].a.u <= leftU {
                 active.append(next)
                 next += 1
             }
-            active.removeAll { edges[$0].b.u <= leftU }
+            active.removeAll {
+                edges[$0].b.u <= leftU
+            }
             if active.isEmpty {
                 previousRight = [:]
                 continue
@@ -135,6 +149,7 @@ enum STEPSlabTriangulator {
 
             var newRight: [ColumnKey: [Int]] = [:]
             var i = 0
+            
             while i < cuts.count {
                 let low = cuts[i]
                 let high = cuts[i + 1]
@@ -157,7 +172,9 @@ enum STEPSlabTriangulator {
     private static func representatives(of values: [Double], epsilon: Double) -> [Double] {
         var result: [Double] = []
         for value in values.sorted() {
-            if let last = result.last, value - last <= epsilon { continue }
+            if let last = result.last, value - last <= epsilon {
+                continue
+            }
             result.append(value)
         }
         return result
@@ -180,9 +197,14 @@ enum STEPSlabTriangulator {
 
     /// Exact at the segment's ends, so the same boundary vertex is bit-identical on both slabs.
     private static func point(on segment: Segment, at u: Double) -> Vertex {
-        if u == segment.a.u { return segment.a }
-        if u == segment.b.u { return segment.b }
+        if u == segment.a.u {
+            return segment.a
+        }
+        if u == segment.b.u {
+            return segment.b
+        }
         let t = (u - segment.a.u) / (segment.b.u - segment.a.u)
+
         return Vertex(u: u,
                       v: segment.a.v + (segment.b.v - segment.a.v) * t,
                       position: segment.a.position + (segment.b.position - segment.a.position) * t)
@@ -192,11 +214,13 @@ enum STEPSlabTriangulator {
     /// plus surface points between them when the surface is curved along v.
     private static func column(_ result: inout Result, u: Double, low: Vertex, high: Vertex,
                                sampling: Sampling) -> [Int] {
+
         let rows = min(maximumRowsPerColumn, max(1, sampling.rows?(u, low.v, high.v) ?? 1))
         var indices: [Int] = []
         indices.reserveCapacity(rows + 1)
         indices.append(result.vertices.count)
         result.vertices.append(low)
+
         if rows > 1 {
             for j in 1..<rows {
                 let v = low.v + (high.v - low.v) * Double(j) / Double(rows)
@@ -206,15 +230,18 @@ enum STEPSlabTriangulator {
         }
         indices.append(result.vertices.count)
         result.vertices.append(high)
+
         return indices
     }
 
     /// Zips two columns (left, right) into triangles, advancing whichever is behind.
     private static func strip(_ result: inout Result, _ a: [Int], _ b: [Int], triangleLimit: Int) throws {
+
         let m = a.count - 1
         let n = b.count - 1
         var i = 0
         var j = 0
+
         while i < m || j < n {
             let advanceLeft = j == n || (i < m && (i + 1) * n <= (j + 1) * m)
             let triangle: SIMD3<Int>
@@ -229,11 +256,14 @@ enum STEPSlabTriangulator {
             let p1 = result.vertices[triangle.y].position
             let p2 = result.vertices[triangle.z].position
             // Collapsed triangles (poles, coincident corners) add nothing.
-            guard simd_length_squared(simd_cross(p1 - p0, p2 - p0)) > 1e-36 else { continue }
+            guard simd_length_squared(simd_cross(p1 - p0, p2 - p0)) > 1e-36 else {
+                continue
+            }
             result.triangles.append(triangle)
             guard result.triangles.count <= triangleLimit else {
                 throw STEP.ParseError("Triangle limit exceeded")
             }
         }
     }
+
 }

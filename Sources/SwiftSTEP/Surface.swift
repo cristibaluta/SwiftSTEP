@@ -51,14 +51,23 @@ extension STEP {
         func transformed(by placement: STEPPlacement) -> Surface {
             let s = placement.scale
             switch self {
-                case .plane(let frame): return .plane(placement.frame(frame))
-                case .cylinder(let frame, let radius): return .cylinder(placement.frame(frame), radius: radius * s)
+                case .plane(let frame):
+                    return .plane(placement.frame(frame))
+
+                case .cylinder(let frame, let radius):
+                    return .cylinder(placement.frame(frame), radius: radius * s)
+
                 case .cone(let frame, let radius, let halfAngle):
                     return .cone(placement.frame(frame), radius: radius * s, halfAngle: halfAngle)
-                case .sphere(let frame, let radius): return .sphere(placement.frame(frame), radius: radius * s)
+
+                case .sphere(let frame, let radius):
+                    return .sphere(placement.frame(frame), radius: radius * s)
+
                 case .torus(let frame, let major, let minor):
                     return .torus(placement.frame(frame), major: major * s, minor: minor * s)
-                case .bspline(let spline): return .bspline(spline.transformed(by: placement))
+
+                case .bspline(let spline):
+                    return .bspline(spline.transformed(by: placement))
             }
         }
 
@@ -106,16 +115,21 @@ extension STEP {
         /// One turn in u: 2π for the analytic surfaces, the knot span for a closed B-spline.
         /// Only meaningful when `isPeriodicU`.
         public var periodU: Double {
-            if case .bspline(let spline) = self { return spline.uDomain.upperBound - spline.uDomain.lowerBound }
+            if case .bspline(let spline) = self {
+                return spline.uDomain.upperBound - spline.uDomain.lowerBound
+            }
             return STEPAngle.twoPi
         }
 
         /// One turn in v. Only meaningful when `isPeriodicV`.
         public var periodV: Double {
-            if case .bspline(let spline) = self { return spline.vDomain.upperBound - spline.vDomain.lowerBound }
+            if case .bspline(let spline) = self {
+                return spline.vDomain.upperBound - spline.vDomain.lowerBound
+            }
             return STEPAngle.twoPi
         }
 
+        // TODO: explain what this does
         private static func radial(_ frame: Frame, _ u: Double) -> SIMD3<Double> {
             cos(u) * frame.x + sin(u) * frame.y
         }
@@ -155,12 +169,12 @@ extension STEP {
         }
 
         /// A point in a frame's coordinates, with its distance from the axis and its longitude.
-        private static func local(_ frame: Frame, _ point: SIMD3<Double>)
-            -> (x: Double, y: Double, z: Double, radial: Double, u: Double) {
+        private static func local(_ frame: Frame, _ point: SIMD3<Double>) -> (x: Double, y: Double, z: Double, radial: Double, u: Double) {
             let offset = point - frame.origin
             let x = simd_dot(offset, frame.x)
             let y = simd_dot(offset, frame.y)
             let z = simd_dot(offset, frame.z)
+
             return (x, y, z, (x * x + y * y).squareRoot(), atan2(y, x))
         }
 
@@ -192,13 +206,17 @@ extension STEP {
         /// subdivided. `nil` for the plane and for B-splines (which have their own density rule).
         func widestRadius(vRange: ClosedRange<Double>) -> Double? {
             switch self {
-                case .plane, .bspline: return nil
-                case .cylinder(_, let radius): return radius
+                case .plane, .bspline:
+                    return nil
+                case .cylinder(_, let radius):
+                    return radius
                 case .cone(_, let radius, let halfAngle):
                     let slope = tan(halfAngle)
                     return max(abs(radius + vRange.lowerBound * slope), abs(radius + vRange.upperBound * slope))
-                case .sphere(_, let radius): return radius
-                case .torus(_, let major, let minor): return major + minor
+                case .sphere(_, let radius):
+                    return radius
+                case .torus(_, let major, let minor):
+                    return major + minor
             }
         }
 
@@ -207,9 +225,12 @@ extension STEP {
         /// B-splines.
         var radiusAlongV: Double? {
             switch self {
-                case .plane, .cylinder, .cone, .bspline: return nil
-                case .sphere(_, let radius): return radius
-                case .torus(_, _, let minor): return minor
+                case .plane, .cylinder, .cone, .bspline:
+                    return nil
+                case .sphere(_, let radius):
+                    return radius
+                case .torus(_, _, let minor):
+                    return minor
             }
         }
     }
