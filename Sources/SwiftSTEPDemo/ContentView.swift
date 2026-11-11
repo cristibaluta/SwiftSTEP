@@ -38,7 +38,7 @@ struct ContentView: View {
                     Button { viewer.isImporting = true } label: { Label("Open…", systemImage: "folder") }
                 }
             }
-            .fileImporter(isPresented: $viewer.isImporting, allowedContentTypes: Viewer.stepTypes) { result in
+            .fileImporter(isPresented: $viewer.isImporting, allowedContentTypes: Viewer.supportedTypes) { result in
                 if case .success(let url) = result { viewer.selectedSample = nil; viewer.open(url) }
             }
             .dropDestination(for: URL.self) { urls, _ in

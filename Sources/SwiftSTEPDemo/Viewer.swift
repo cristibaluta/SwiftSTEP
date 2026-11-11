@@ -57,7 +57,7 @@ final class Viewer: ObservableObject {
     private var loadTask: Task<Void, Never>?
     private var started = false
 
-    static let stepTypes: [UTType] = ["step", "stp"].compactMap { UTType(filenameExtension: $0) }
+    static let supportedTypes: [UTType] = ["step", "stp", "stl"].compactMap { UTType(filenameExtension: $0) }
 
     var title: String { document?.url.lastPathComponent ?? "SwiftSTEP Demo" }
 
@@ -101,7 +101,9 @@ final class Viewer: ObservableObject {
             do {
                 // The library's async entry point: parses on a detached worker, cancellable. An
                 // assembly comes back as an array of bodies, each placed in assembly coordinates.
-                let assembly = try await STEP.loadAssembly(contentsOf: url)
+                let isSTL = url.pathExtension.lowercased() == "stl"
+                let assembly = isSTL ? try await STL.loadAssembly(contentsOf: url)
+                                     : try await STEP.loadAssembly(contentsOf: url)
                 try Task.checkCancellation()
                 LoadClock.shared.mark("STEP.loadAssembly (read file + library, see breakdown)")
                 for stage in assembly.timings { LoadClock.shared.sub(stage.name, seconds: stage.seconds) }

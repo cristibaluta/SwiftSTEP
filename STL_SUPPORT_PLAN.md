@@ -27,13 +27,13 @@ demo renderer and any consumer of `BodyMesh` work unchanged. Minimum new code: o
 
 ## Phase 1: reader (shaded mesh)
 
-### Step 1. Check the model types can be built from outside the STEP pipeline
+### Step 1 (done). Check the model types can be built from outside the STEP pipeline
 - `EdgeModel.importID` is `let`, and the other fields are `internal(set)`. Confirm an in-module initializer
   exists, or add `init(importID:)` (internal is enough).
 - `BodyMesh` has `internal(set)` fields and needs an in-module `init(id:)`. Same check.
 - Confirm `STEP.Geometry` has an in-module memberwise init.
 
-### Step 2. Create `Sources/SwiftSTEP/STL.swift`
+### Step 2 (done). Create `Sources/SwiftSTEP/STL.swift`
 Public API:
 ```swift
 public enum STL {
@@ -72,18 +72,18 @@ Internals, in order:
    Wrap both in `STEP.Geometry`. Set `tessellatedFaceCount` and similar counters sensibly (0 faces).
 9. Apply the unit scale to positions and bounds if it is not 1.
 
-### Step 3. Async wrapper
+### Step 3 (done). Async wrapper
 `loadGeometry(contentsOf:)` calls `STEPEdgeImporter.detached { try readGeometry(...) }`. Read the file with
 `Data(contentsOf:options: .mappedIfSafe)` as the STEP entry points do.
 
-### Step 4. Demo app
+### Step 4 (done, except the optional sample). Demo app
 - `Viewer.swift`: add `"stl"` to `stepTypes` (rename to `supportedTypes`).
 - In the load function, branch on `url.pathExtension.lowercased()`: `"stl"` calls `STL.loadGeometry`, otherwise
   `STEP.loadGeometry`.
 - Check `Renderer.load` copes with `edges.edges.isEmpty` (camera framing should use `edges.bounds`, which we set).
 - Optional: bundle one small `cube.stl` in `Samples/`.
 
-### Step 5. Tests: `Tests/SwiftSTEPTests/STLTests.swift`
+### Step 5 (done, gzip test skipped). Tests: `Tests/SwiftSTEPTests/STLTests.swift`
 Build the files in memory, no fixtures needed:
 - Binary cube (12 triangles): triangle count, bounds, normals point outward.
 - ASCII cube: same results as binary.
@@ -97,7 +97,7 @@ Build the files in memory, no fixtures needed:
 - `assumedUnitScaleToMM = 25.4`: bounds scale.
 - Cancellation: a cancelled task throws `CancellationError`.
 
-### Step 6. Docs
+### Step 6 (done). Docs
 Add a short "STL" section to `README.md`: the API, the "no edges, flat shading, units assumed mm" caveats.
 
 ## Phase 2 (optional): feature edges and smooth shading

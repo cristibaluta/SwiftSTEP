@@ -147,6 +147,20 @@ result with `bounds == nil`.
 
 A `STEPFile` and its extractor are task-confined: never share them across tasks. Use the static entry points.
 
+## STL
+
+```swift
+let geometry = try STL.readGeometry(contentsOf: url)           // same STEP.Geometry as STEP.readGeometry
+let geometry = try await STL.loadGeometry(contentsOf: url)     // async, cancellable
+let assembly = try await STL.loadAssembly(contentsOf: url)     // one-body STEP.Assembly (what the demo uses)
+```
+
+Reads binary and ASCII STL, optionally gzipped. Binary is detected by file size, not by a leading `solid`.
+Caveats: no edges (the edge model is empty), flat shading from triangle winding (stored normals are
+ignored), no units (millimetres unless `Options.assumedUnitScaleToMM` is set, reported as `unitsAssumed`),
+`BodyMesh.faces` is empty, and several `solid` blocks become one body. Zero-area triangles are dropped
+with a `degenerate-triangles` note. Meshes are not repaired or welded.
+
 ## Tests
 
 `swift test`. `STEPCurveTests.swift` (Swift Testing) builds Part 21 fixtures in code: box, cylinder, arcs,
