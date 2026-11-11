@@ -3,7 +3,10 @@ import PackageDescription
 
 let package = Package(
     name: "SwiftSTEP",
-    platforms: [.macOS(.v13), .iOS(.v15)],
+    platforms: [
+        .macOS(.v13),
+        .iOS(.v16)
+    ],
     products: [
         .library(name: "SwiftSTEP", targets: ["SwiftSTEP"]),
         .executable(name: "SwiftSTEPDemo", targets: ["SwiftSTEPDemo"])

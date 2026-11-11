@@ -48,6 +48,7 @@ enum STEPEdgeImporter {
     static func parseAssembly(data: Data, importID: UUID = UUID(), options: STEP.Options = STEP.Options(),
                               includeSurfaces: Bool = true) throws -> STEP.Assembly {
         try Task.checkCancellation()
+        // TODO: this needs ios16, we should support lower
         let clock = ContinuousClock()
         var timings: [STEP.StageTiming] = []
         func timed<T>(_ name: String, _ work: () throws -> T) rethrows -> T {
